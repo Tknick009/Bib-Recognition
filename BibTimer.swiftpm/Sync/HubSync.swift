@@ -205,12 +205,14 @@ final class HubSync: ObservableObject {
         // connection that has sat idle is sometimes closed just as it is used
         // again, and the next attempt, two seconds later, succeeds.
         lastError = failures >= 2 || turnedDown ? message : nil
+        let doublings = pow(2, Double(min(failures, 6)))
         // 2, 4, 8 … seconds between attempts, up to a minute. An upload that
         // was turned down went out in full only to get the same answer, so
-        // those are spaced up to five minutes apart to save data. Changing
-        // the settings starts afresh at once.
-        let longest = turnedDown ? 300.0 : 60.0
-        retryAfter = monotonic.now() + min(longest, pow(2, Double(min(failures, 9))))
+        // those are spaced further apart to save data: half a minute, then
+        // 1, 2 and 4 minutes, and from then on 5. Changing the settings
+        // starts afresh at once.
+        let wait = turnedDown ? min(300, 15 * doublings) : min(60, doublings)
+        retryAfter = monotonic.now() + wait
     }
 
     private func refreshStatus() {
