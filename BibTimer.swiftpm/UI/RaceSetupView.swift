@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 struct RaceSetupView: View {
     @EnvironmentObject private var store: RaceStore
     @EnvironmentObject private var time: TimeService
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var hub: HubSync
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
@@ -17,6 +19,8 @@ struct RaceSetupView: View {
     @State private var rosterProblem: String?
     @State private var confirmingClear = false
     @State private var retimeMessage: String?
+    @State private var codeText = ""
+    @State private var codeProblem: String?
     @State private var loaded = false
 
     var body: some View {
@@ -33,6 +37,7 @@ struct RaceSetupView: View {
                 }
                 startSection
                 rosterSection
+                hubSection
                 if let race = store.race, race.deviceClockCount > 0 {
                     clockSection(count: race.deviceClockCount)
                 }
@@ -64,6 +69,7 @@ struct RaceSetupView: View {
                 guard !loaded, let race = store.race else { return }
                 loaded = true
                 name = race.name
+                codeText = race.eventCode(timeZone: .current)
                 if let start = race.startTime {
                     startDay = start
                     startClock = TimeFormat.timeOfDay(start, timeZone: .current, decimals: 1)
@@ -191,6 +197,70 @@ struct RaceSetupView: View {
             }
             let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
             useRoster(text)
+        }
+    }
+
+    // MARK: Live results
+
+    private var hubSection: some View {
+        Section {
+            if settingsStore.settings.hub == nil {
+                Text("No results server is set up. Add one under Settings → Live results to have this race's results copied to your scoring computer as they are recorded.")
+                    .foregroundStyle(.secondary)
+            } else {
+                Toggle("Send this race's results", isOn: Binding(
+                    get: { store.race?.hubPaused != true },
+                    set: { isOn in store.update { $0.hubPaused = isOn ? nil : true } }
+                ))
+                LabeledContent("Event code") {
+                    TextField("event code", text: $codeText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit { applyCode() }
+                }
+                if codeText != store.race?.eventCode(timeZone: .current) {
+                    Button("Use this code") {
+                        applyCode()
+                    }
+                }
+                if let codeProblem {
+                    Text(codeProblem).foregroundStyle(.red)
+                }
+                Text(hubStatusText).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Live results")
+        } footer: {
+            Text("Every iPad at an event must use the same event code: that is how their results are combined on the results server. iPads on which the race was created with the same name on the same day already agree.")
+        }
+    }
+
+    private func applyCode() {
+        let code = HubPlanner.normalizedCode(codeText)
+        guard HubPlanner.isValidCode(code) else {
+            codeProblem = "Use 3 to 50 letters, digits and hyphens."
+            return
+        }
+        codeProblem = nil
+        codeText = code
+        store.update { $0.hubCode = code }
+    }
+
+    private var hubStatusText: String {
+        switch hub.status {
+        case .off:
+            return "No server set up."
+        case .idle:
+            return "Waiting."
+        case .paused:
+            return "This race is not being sent."
+        case .waiting(let count):
+            return count > 0 ? "\(count) results still to send." : "Sending."
+        case .upToDate:
+            return "Everything is on the server."
+        case .failed(let message):
+            return "Not sent yet, still trying. \(message)"
         }
     }
 

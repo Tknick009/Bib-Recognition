@@ -45,6 +45,38 @@ struct SyncChip: View {
     }
 }
 
+/// A small badge that says whether results are reaching the results server.
+/// Shows nothing when no server has been set up.
+struct HubChip: View {
+    @EnvironmentObject private var hub: HubSync
+
+    var body: some View {
+        if let look = HubChip.look(for: hub.status) {
+            Label(look.text, systemImage: look.symbol)
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(look.color)
+                .background(look.color.opacity(0.15), in: Capsule())
+        }
+    }
+
+    private static func look(for status: HubSync.Status) -> (text: String, symbol: String, color: Color)? {
+        switch status {
+        case .off, .idle:
+            return nil
+        case .paused:
+            return ("Not shared", "icloud.slash", Color.secondary)
+        case .waiting(let count):
+            return (count > 0 ? "Sending \(count)" : "Sending", "arrow.up.circle", Color.orange)
+        case .upToDate:
+            return ("Shared", "checkmark.icloud.fill", Color.green)
+        case .failed:
+            return ("Not sent yet", "exclamationmark.icloud.fill", Color.red)
+        }
+    }
+}
+
 /// The running race clock: elapsed time once the race has a start time, and
 /// the time of day.
 struct ClockDisplay: View {

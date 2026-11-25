@@ -27,6 +27,10 @@ struct AppSettings: Codable, Equatable {
     var savePhotos = true
     /// Outline text that was read but rejected, to help with setting up.
     var showAllText = false
+    /// Address of the results hub that results are sent to; empty for none.
+    var hubAddress = ""
+    /// The hub's access key.
+    var hubKey = ""
 
     static let defaultServers = ["time.apple.com", "time.cloudflare.com", "pool.ntp.org"]
     static let shutterChoices = [0, 125, 250, 500, 1000]
@@ -51,6 +55,15 @@ struct AppSettings: Codable, Equatable {
         zoom = container.value(.zoom, default: defaults.zoom)
         savePhotos = container.value(.savePhotos, default: defaults.savePhotos)
         showAllText = container.value(.showAllText, default: defaults.showAllText)
+        hubAddress = container.value(.hubAddress, default: defaults.hubAddress)
+        hubKey = container.value(.hubKey, default: defaults.hubKey)
+    }
+
+    /// The hub to send results to, if one has been set up completely.
+    var hub: (base: URL, key: String)? {
+        let key = hubKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, let base = HubPlanner.baseURL(from: hubAddress) else { return nil }
+        return (base, key)
     }
 
     var trackerConfig: TrackerConfig {

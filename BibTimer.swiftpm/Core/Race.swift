@@ -69,6 +69,11 @@ struct Race: Identifiable, Codable, Equatable {
     var roster: [RosterEntry]
     /// Only accept bib numbers that are on the start list.
     var restrictToRoster: Bool
+    /// The code under which this race's results are collected on the results
+    /// hub. Every iPad at the event uses the same one.
+    var hubCode: String?
+    /// True to keep this race's results off the hub.
+    var hubPaused: Bool?
 
     init(id: UUID = UUID(), name: String, createdAt: Date = Date()) {
         self.id = id
@@ -78,6 +83,15 @@ struct Race: Identifiable, Codable, Equatable {
         self.crossings = []
         self.roster = []
         self.restrictToRoster = false
+        self.hubCode = nil
+        self.hubPaused = nil
+    }
+
+    /// The event code in force: the one set for this race or, failing that,
+    /// one made from its name and the day it was created.
+    func eventCode(timeZone: TimeZone) -> String {
+        if let hubCode, HubPlanner.isValidCode(hubCode) { return hubCode }
+        return HubPlanner.eventCode(name: name, date: createdAt, timeZone: timeZone)
     }
 
     /// Crossings in finishing order.

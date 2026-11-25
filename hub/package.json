@@ -1,0 +1,14 @@
+{
+  "name": "bib-timer-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Collects results from Bib Timer iPads and serves them to the scoring computer.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}

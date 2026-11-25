@@ -1,0 +1,7 @@
+.git
+.github
+.build
+BibTimer.swiftpm
+Tests
+hub/data
+hub/test

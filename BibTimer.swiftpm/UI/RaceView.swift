@@ -224,6 +224,12 @@ struct RaceView: View {
                         SyncChip()
                     }
                     .buttonStyle(.plain)
+                    Button {
+                        activeSheet = .setup
+                    } label: {
+                        HubChip()
+                    }
+                    .buttonStyle(.plain)
                     Spacer()
                     if let message = store.saveError {
                         Label("Not saved", systemImage: "exclamationmark.triangle.fill")

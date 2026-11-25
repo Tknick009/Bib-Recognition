@@ -9,6 +9,14 @@ struct SettingsView: View {
     @State private var serversText = ""
     @State private var ignoredText = ""
     @State private var loaded = false
+    @State private var hubCheck: HubCheck?
+    @State private var isCheckingHub = false
+
+    /// The outcome of "Check the connection".
+    struct HubCheck: Equatable {
+        var ok: Bool
+        var message: String
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,11 +27,14 @@ struct SettingsView: View {
                 readingSection
                 cameraSection
                 serversSection
+                hubSection
                 Section {
                     Button("Restore default settings", role: .destructive) {
-                        let station = settingsStore.settings.station
+                        // Who this iPad is and where it sends results are kept.
                         var fresh = AppSettings()
-                        fresh.station = station
+                        fresh.station = settingsStore.settings.station
+                        fresh.hubAddress = settingsStore.settings.hubAddress
+                        fresh.hubKey = settingsStore.settings.hubKey
                         settingsStore.settings = fresh
                         load()
                     }
@@ -168,6 +179,68 @@ struct SettingsView: View {
             Text("Camera")
         } footer: {
             Text("A short exposure keeps moving bibs sharp; in poor light choose a longer one or Automatic. 4K records more detail: lower Smallest text as well to read bibs further away, at the cost of slower scans. Fewer scans per second keep the iPad cooler on a long day.")
+        }
+    }
+
+    private var hubSection: some View {
+        Section {
+            TextField("Server address", text: $settingsStore.settings.hubAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            TextField("Access key", text: $settingsStore.settings.hubKey)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button {
+                Task { await checkHub() }
+            } label: {
+                HStack {
+                    Text("Check the connection")
+                    if isCheckingHub {
+                        Spacer()
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(isCheckingHub)
+            if let hubCheck {
+                Label(hubCheck.message, systemImage: hubCheck.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(hubCheck.ok ? Color.green : Color.red)
+            }
+        } header: {
+            Text("Live results")
+        } footer: {
+            Text("Optional. If you run the Bib Timer results server, enter its address and access key here, the same on every iPad. Results are then copied to it as they are recorded, for your scoring computer to read. Everything is still saved on this iPad first, and nothing is lost if the connection drops.")
+        }
+        .onChange(of: settingsStore.settings.hubAddress) { _, _ in
+            hubCheck = nil
+        }
+        .onChange(of: settingsStore.settings.hubKey) { _, _ in
+            hubCheck = nil
+        }
+    }
+
+    private func checkHub() async {
+        guard let hub = settingsStore.settings.hub else {
+            let hasAddress = HubPlanner.baseURL(from: settingsStore.settings.hubAddress) != nil
+            hubCheck = HubCheck(ok: false, message: hasAddress
+                ? "Enter the access key."
+                : "Enter the server's address, for example my-results.up.railway.app.")
+            return
+        }
+        isCheckingHub = true
+        defer { isCheckingHub = false }
+        do {
+            let ping = try await HubClient(base: hub.base, key: hub.key).ping()
+            if ping.access != "full" {
+                hubCheck = HubCheck(ok: false, message: "This key can only view results. iPads need the main access key.")
+            } else if ping.persistent == false {
+                hubCheck = HubCheck(ok: true, message: "Connected. The server is keeping results in memory only.")
+            } else {
+                hubCheck = HubCheck(ok: true, message: "Connected.")
+            }
+        } catch {
+            hubCheck = HubCheck(ok: false, message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
 

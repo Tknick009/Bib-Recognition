@@ -15,9 +15,45 @@ jobs:
     container: swift:6.0-noble
     steps:
       - uses: actions/checkout@v5
-      - run: swift --version
-      - name: Unit tests
-        run: swift test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: |
+          swift --version
+          node --version
+      - name: Unit tests, with the app's upload client talking to a real hub
+        env:
+          BIBTIMER_HUB_URL: http://127.0.0.1:8791
+          BIBTIMER_HUB_KEY: ci-integration-key
+        run: |
+          PORT=8791 HUB_KEY="$BIBTIMER_HUB_KEY" DATA_DIR=/tmp/hub-data node hub/server.js &
+          sleep 2
+          swift test
+
+  hub:
+    name: Results hub (Node tests, Docker image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        working-directory: hub
+        run: node --test
+      - name: Build the image the hosting service builds, and start it
+        run: |
+          docker build -t bib-timer-hub .
+          docker run -d --name hub -p 8080:8080 -e HUB_KEY=ci-image-check-key bib-timer-hub
+          for attempt in $(seq 1 20); do
+            curl -fsS http://127.0.0.1:8080/health && break
+            sleep 1
+          done
+          echo
+          curl -fsS -H "Authorization: Bearer ci-image-check-key" http://127.0.0.1:8080/api/ping
+          echo
+          curl -fsS -o /dev/null http://127.0.0.1:8080/
+          docker logs hub
 
   apple:
     name: Tests and iOS build (macOS)
@@ -28,12 +64,6 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
-      - name: Can this machine reach NTP servers at all?
-        run: |
-          for server in time.apple.com time.cloudflare.com pool.ntp.org; do
-            echo "== $server"
-            sntp -t 4 "$server" || echo "no answer from $server"
-          done
       - name: Unit tests, including text recognition and the NTP client
         run: swift test
       - name: Compile every app source file for iOS
@@ -55,7 +85,6 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p ../.build
-          xcodebuild -list || true
           xcodebuild build \
             -scheme BibTimer \
             -destination 'generic/platform=iOS Simulator' \

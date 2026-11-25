@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     let time: TimeService
     let store: RaceStore
     let capture: CaptureCoordinator
+    let hub: HubSync
 
     private var subscriptions = Set<AnyCancellable>()
 
@@ -19,11 +20,13 @@ final class AppModel: ObservableObject {
         let time = TimeService(clock: clock, servers: settings.settings.cleanedServers)
         let store = RaceStore()
         let capture = CaptureCoordinator(clock: clock)
+        let hub = HubSync()
         self.settings = settings
         self.clock = clock
         self.time = time
         self.store = store
         self.capture = capture
+        self.hub = hub
 
         // What the camera records goes into the open race.
         capture.sightingHandler = { sightings in
@@ -39,7 +42,16 @@ final class AppModel: ObservableObject {
             }
             .store(in: &subscriptions)
 
+        // Results are copied to the results server, if one is set up.
+        settings.$settings
+            .combineLatest(store.$race)
+            .sink { newSettings, race in
+                hub.update(race: race, settings: newSettings)
+            }
+            .store(in: &subscriptions)
+
         time.start()
+        hub.start()
     }
 }
 #endif

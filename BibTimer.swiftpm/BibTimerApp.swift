@@ -11,6 +11,7 @@ struct BibTimerApp: App {
                 .environmentObject(model.time)
                 .environmentObject(model.store)
                 .environmentObject(model.capture)
+                .environmentObject(model.hub)
         }
     }
 }

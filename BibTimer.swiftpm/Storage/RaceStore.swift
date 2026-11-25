@@ -68,7 +68,10 @@ final class RaceStore: ObservableObject {
     @discardableResult
     func createRace(named name: String) -> UUID {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let race = Race(name: trimmed.isEmpty ? "Race" : trimmed)
+        var race = Race(name: trimmed.isEmpty ? "Race" : trimmed)
+        // Fixed now, so that it does not change if the race is renamed or the
+        // iPad moves to another time zone.
+        race.hubCode = race.eventCode(timeZone: .current)
         write(race, synchronously: true)
         summaries.insert(Summary(id: race.id, name: race.name, createdAt: race.createdAt, count: 0), at: 0)
         return race.id

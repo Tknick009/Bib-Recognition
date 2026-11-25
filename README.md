@@ -18,6 +18,10 @@ time servers, and gives you a CSV list of bibs and times.
 - **Results are saved continuously**, so a flat battery or a crash does not lose
   a race.
 - **CSV export**, by AirDrop, Files, Mail or the clipboard.
+- **Live results on your scoring computer** (optional). With the iPads online,
+  they copy their results to a small website as they record them. The scoring
+  computer opens one address and sees every iPad's results combined, or
+  downloads them as CSV.
 
 > **Try it before race day.** The timing logic is covered by automated tests and
 > the whole app is compiled in CI, but camera reading depends on your set-up:
@@ -30,6 +34,7 @@ time servers, and gives you a CSV list of bibs and times.
 - [Putting the app on an iPad](#putting-the-app-on-an-ipad)
 - [At the race](#at-the-race)
 - [Several iPads](#several-ipads)
+- [Live results on your scoring computer](#live-results-on-your-scoring-computer)
 - [How accurate is it?](#how-accurate-is-it)
 - [The exported file](#the-exported-file)
 - [Settings](#settings)
@@ -190,7 +195,120 @@ Each iPad syncs to NTP separately, so they all keep the same time of day.
   or leave it unset and work from time of day.
 - Two iPads on the same finish line, at different angles, catch bibs that one
   alone would miss. Export both and combine the files by bib number in a
-  spreadsheet, keeping the earlier time for each bib.
+  spreadsheet, keeping the earlier time for each bib. Or let the results hub
+  described next do the combining for you.
+
+## Live results on your scoring computer
+
+This part is optional. Without it, results leave an iPad by export (step 7
+above). With it, every iPad copies its results to a small website, the *hub*,
+as they are recorded, and the scoring computer reads them from there.
+
+```
+iPad (Start)   ─┐
+iPad (Finish A) ─┼─ upload ─▶  hub (a website you run)  ─▶  scoring computer
+iPad (Finish B) ─┘                                           live page or CSV
+```
+
+**The race does not depend on the connection.** Each iPad saves every result on
+itself first and uploads afterwards. If the signal drops, uploads simply resume
+when it returns; nothing is lost and no time changes. Exporting from the iPad
+keeps working whatever happens to the hub.
+
+The hub is the `hub` folder of this repository: one small Node program with no
+other parts. It runs on any host that can run a Docker image. These steps use
+[Railway](https://railway.com); its menus change from time to time, so a name
+may differ slightly from what is written here.
+
+### 1. Put the hub on Railway
+
+1. In Railway, create a **New Project**, choose **Deploy from GitHub repo** and
+   pick this repository. Railway builds the hub from the `Dockerfile` in the
+   repository; there is nothing to configure for the build.
+2. Open the new service's **Variables** and add `HUB_KEY`. Make it a long
+   phrase nobody would guess (at least 8 characters; 20 or more is better).
+   This is the access key: anyone who has it can see and change the results.
+3. In the service's **Settings**, under networking, **generate a domain**. You
+   get an address like `https://something.up.railway.app`. If Railway asks
+   which port the app listens on, it is the number in the hub's log line
+   `[hub] listening on port …` (normally 8080).
+4. Recommended: add a **Volume** to the service, mounted at `/data`. Results
+   are then kept across restarts. Without one the hub starts empty after every
+   restart, and the iPads fill it again by themselves the next time the app is
+   open and online.
+5. Open the address in a browser on the scoring computer and enter the key.
+   The page says no results have arrived yet.
+
+A second variable, `HUB_VIEW_KEY`, is optional: a key that can look at results
+but not change them, for an announcer or a results screen.
+
+### 2. Point the iPads at it
+
+On every iPad:
+
+1. **Settings → Live results**: enter the address and the access key, then tap
+   **Check the connection**.
+2. **Settings → Station name**: give each iPad its own (*Start*, *Finish A*).
+3. **⋯ → Race setup → Live results**: check the **event code**. Every iPad at
+   the event must show the same one, because that is how their results are
+   combined. iPads on which the race was created with the same name on the same
+   day already agree; otherwise edit the code on one of them to match.
+
+A badge next to the clock badge shows the state: **Shared** (everything is on
+the hub), **Sending 3** (three results still to go) or **Not sent yet** (no
+connection at the moment; it keeps trying).
+
+### 3. On the scoring computer
+
+The hub's page lists the results of all iPads in order, updating every couple
+of seconds. You can hide a station, show one row per bib (the earliest, useful
+with two iPads on the same line), and download the CSV. Each station shows when
+it was last heard from; an iPad checks in every 30 seconds even when nothing is
+happening, so a station that has been silent for a few minutes has lost its
+connection or its app has been closed.
+
+To fetch the results from scoring software or a script instead, use the direct
+address (the page's **Copy CSV link** button builds it for you):
+
+```
+https://YOUR-ADDRESS/api/events/EVENT-CODE/results.csv?key=YOUR-KEY
+```
+
+| Add to the address | Effect |
+| --- | --- |
+| `&format=detailed` | All columns instead of bib, time of day, elapsed and station. |
+| `&stations=Finish A,Finish B` | Only these stations. |
+| `&dedupe=first` | One row per bib: the earliest. |
+| `&tz=America/New_York` | Times of day in this time zone (default: the iPads' own). |
+
+The same address ending in `results.json` gives everything as JSON. The key can
+also be sent as an `Authorization: Bearer YOUR-KEY` header, which keeps it out
+of the address.
+
+`elapsed` is measured from the start time set on an iPad (tap **Start**, or set
+it in Race setup). If more than one iPad has a start time, the one set most
+recently is used, and the page shows which iPad it came from.
+
+### What is sent, and keeping it private
+
+Sent: bib numbers, times, how each time was taken, the station name, the race
+name and your notes. Not sent: photos, and the names on the start list.
+
+Everything travels over HTTPS, and nothing can be read or written without the
+key. Treat the key, and any link that contains it, like a password. To change
+it, change `HUB_KEY` on Railway and enter the new one on the iPads.
+
+### Running the hub somewhere else
+
+```
+cd hub
+HUB_KEY=your-long-key node server.js
+```
+
+It needs Node 20 or later and nothing else, listens on `PORT` (8080 unless
+set), and keeps its copy of the results in `DATA_DIR` (`hub/data` unless set).
+The iPads only talk to it over HTTPS, so put it behind something that provides
+that.
 
 ## How accurate is it?
 
@@ -271,6 +389,7 @@ bib,time_of_day,elapsed
 | Longest exposure | A short exposure keeps moving bibs sharp. Use a longer one or Automatic in poor light. |
 | Scans per second | Fewer keeps the iPad cooler over a long day. |
 | NTP time servers | Default: `time.apple.com`, `time.cloudflare.com`, `pool.ntp.org`. A server on your own network can be used too. |
+| Live results | Address and access key of your results hub, if you run one. See [Live results](#live-results-on-your-scoring-computer). |
 
 ## If something is not working
 
@@ -287,27 +406,42 @@ bib,time_of_day,elapsed
   corporate Wi-Fi networks block. Try a phone hotspot.
 - **The iPad gets hot and slow.** Lower *Scans per second*, keep it out of
   direct sun, and take it out of its case.
+- **The badge says "Not sent yet".** The iPad cannot reach the results hub at
+  the moment. Results are safe on the iPad and are sent when the connection
+  returns. If it never clears, use *Check the connection* in Settings: it says
+  whether the address or the key is the problem.
+- **The hub page shows two events for one race.** The iPads are using different
+  event codes. Make them the same in Race setup; the iPad then sends its
+  results under the new code. Clear away the stray one, and anything left from
+  a practice run, with **Remove event** on the hub page.
 
 ## For developers
 
 ```
 BibTimer.swiftpm/        the app (a Swift Playgrounds app project)
   Core/                  platform-independent logic: NTP packets and clock
-                         maths, bib rules, tracking, results, CSV export
+                         maths, bib rules, tracking, results, CSV export,
+                         and what is sent to the hub
   Time/                  NTP client (Network.framework) and sync service
   Recognition/           Vision text recognition
   Capture/               camera and the frame-analysis pipeline
   Storage/               races on disk
+  Sync/                  uploading results to the hub
   UI/                    SwiftUI screens
 Package.swift            test/CI manifest: the same sources as a library
-Tests/                   unit tests
+Tests/                   unit tests for the app
+hub/                     the results hub (Node, no dependencies) and its tests
+Dockerfile               builds the hub, for Railway or any container host
 ```
 
 The root `Package.swift` compiles everything in `BibTimer.swiftpm` except the
 app entry point as a library, so the tests run with `swift test`. On Linux that
-covers the core logic; on macOS it also runs the real Vision recognizer against
-generated pictures and the real UDP client against a local time server. CI
-(`.github/workflows/ci.yml`) runs both and compiles all sources for iOS.
+covers the core logic, checks the NTP packet code against public time servers,
+and drives the app's upload client against a running hub. On macOS it also runs
+the real Vision recognizer against generated pictures and the real UDP client
+against a local time server. The hub has its own tests: `cd hub && node --test`.
+CI (`.github/workflows/ci.yml`) runs all of these, builds the hub's Docker
+image, compiles all app sources for iOS and builds the app project.
 
 How a time is produced:
 
@@ -322,3 +456,6 @@ How a time is produced:
    which the track crosses the finish line.
 4. `RaceClock` converts that monotonic time to time of day with the current
    fix. `CrossingLedger` applies the once-per-bib rule and `RaceStore` saves.
+5. If a hub is set up, `HubSync` uploads what changed since the last upload the
+   hub accepted (`HubPlanner` works that out) and sends everything again
+   whenever the hub's answer shows it holds something else.
