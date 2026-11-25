@@ -4,6 +4,7 @@ import SwiftUI
 /// How this iPad reads bibs and takes times.
 struct SettingsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var hub: HubSync
     @Environment(\.dismiss) private var dismiss
 
     @State private var serversText = ""
@@ -273,6 +274,8 @@ struct SettingsView: View {
                     ? "Connected. The server is keeping results in memory only."
                     : "Connected."
                 hubCheck = HubCheck(ok: true, message: message, address: address, key: key)
+                // Uploads that were waiting to try again need wait no longer.
+                hub.retryNow()
                 return
             }
             problem = "This key can only view results. iPads need the main access key."

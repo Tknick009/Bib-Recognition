@@ -110,6 +110,12 @@ final class HubSync: ObservableObject {
         refreshStatus()
     }
 
+    /// Tries again without waiting any longer, for when the operator has
+    /// just seen the server answer.
+    func retryNow() {
+        retryAfter = 0
+    }
+
     /// Starts uploading in the background; keeps going for the life of the app.
     func start() {
         guard loop == nil else { return }
@@ -172,27 +178,39 @@ final class HubSync: ObservableObject {
             known = HubPlanner.state(after: push, reply: reply, known: known)
             if known == nil, push.full {
                 // Everything was sent and the hub still disagrees. Trying
-                // again at once would only repeat that, so back off.
-                noteFailure("The results server did not take in every result.")
+                // again soon would only repeat that.
+                noteFailure("The results server did not take in every result.", turnedDown: true)
             } else {
                 failures = 0
                 lastError = nil
                 retryAfter = 0
             }
         case .failure(let error):
-            noteFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            // The server answered and said no (a wrong key, say), as opposed
+            // to not being reachable or being out of order for the moment.
+            var turnedDown = false
+            if let failure = error as? HubClient.Failure, case .refused(let status, _) = failure {
+                turnedDown = (400..<500).contains(status) && status != 408 && status != 429
+            }
+            noteFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, turnedDown: turnedDown)
         }
         refreshStatus()
     }
 
-    private func noteFailure(_ message: String) {
+    /// - Parameter turnedDown: The server received the upload and would not
+    ///   have it, which trying again will not change by itself.
+    private func noteFailure(_ message: String, turnedDown: Bool = false) {
         failures += 1
-        // A single failed attempt is not reported: a connection that has sat
-        // idle is sometimes closed just as it is used again, and the next
-        // attempt, two seconds later, goes through.
-        lastError = failures >= 2 ? message : nil
-        // 2, 4, 8 … seconds between attempts, up to a minute.
-        retryAfter = monotonic.now() + min(60, pow(2, Double(min(failures, 6))))
+        // A single failed attempt to get through is not reported: a
+        // connection that has sat idle is sometimes closed just as it is used
+        // again, and the next attempt, two seconds later, succeeds.
+        lastError = failures >= 2 || turnedDown ? message : nil
+        // 2, 4, 8 … seconds between attempts, up to a minute. An upload that
+        // was turned down went out in full only to get the same answer, so
+        // those are spaced up to five minutes apart to save data. Changing
+        // the settings starts afresh at once.
+        let longest = turnedDown ? 300.0 : 60.0
+        retryAfter = monotonic.now() + min(longest, pow(2, Double(min(failures, 9))))
     }
 
     private func refreshStatus() {

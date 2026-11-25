@@ -461,7 +461,10 @@ bib,time_of_day,elapsed
 - **The badge says "Not sent yet".** The iPad cannot reach the results hub at
   the moment. Results are safe on the iPad and are sent when the connection
   returns. If it never clears, use *Check the connection* in Settings: it says
-  whether the address or the key is the problem.
+  whether the address or the key is the problem. When the hub turns an upload
+  down (a changed key, for example), the iPad tries again only every few
+  minutes, to save data; a successful *Check the connection* makes it try at
+  once.
 - **A new hub address or key is not being used.** It only comes into use when
   **Connect** in Settings has succeeded. The message under the button says what
   went wrong.
