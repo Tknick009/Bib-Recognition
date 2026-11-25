@@ -166,6 +166,12 @@ struct TrackReport: Equatable {
     var ended: Bool
 }
 
+/// A tracker report together with the photo taken for it, if any.
+struct BibSighting {
+    var report: TrackReport
+    var photo: Data?
+}
+
 /// Turns tracker reports into crossings, applying the repeat rule and
 /// following a track when its number is corrected after it was recorded.
 struct CrossingLedger {
