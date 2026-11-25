@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0-noble
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - name: Unit tests
+        run: swift test
+
+  apple:
+    name: Tests and iOS build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Unit tests, including text recognition and the NTP client
+        run: swift test
+      - name: Compile every app source file for iOS
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          mkdir -p .build
+          xcodebuild build \
+            -scheme BibTimerKit \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .build/xcode \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee .build/xcodebuild-ios.log | grep -E "error|warning: unre|BUILD|^\*\*" || true
+          grep -q "BUILD SUCCEEDED" .build/xcodebuild-ios.log
+      - name: Build the app project itself for the iOS Simulator
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: BibTimer.swiftpm
+        run: |
+          set -o pipefail
+          mkdir -p ../.build
+          xcodebuild -list || true
+          xcodebuild build \
+            -scheme BibTimer \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ../.build/xcode-app \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee ../.build/xcodebuild-app.log | grep -E "error|BUILD|^\*\*" || true
+          grep -q "BUILD SUCCEEDED" ../.build/xcodebuild-app.log
+      - name: Show build errors
+        if: failure()
+        run: |
+          for log in .build/xcodebuild-ios.log .build/xcodebuild-app.log; do
+            if [ -f "$log" ]; then
+              echo "::group::$log"
+              grep -n -E "error:|error |fatal|BUILD FAILED" -A 6 "$log" | head -400 || true
+              echo "::endgroup::"
+            fi
+          done
