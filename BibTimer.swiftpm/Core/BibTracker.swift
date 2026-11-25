@@ -31,8 +31,10 @@ struct TrackerConfig: Equatable {
     var line = FinishLine.standard
     /// Frames in which a number must be read before it is believed.
     var minSightings = 2
-    /// A bib that has not been read for this long has left the frame.
-    var trackTimeout: TimeInterval = 1.2
+    /// A bib that has not been read for this long has left the frame. Long
+    /// enough to bridge a runner being hidden behind another for a moment, so
+    /// the crossing can still be interpolated across the gap.
+    var trackTimeout: TimeInterval = 2.0
     /// How long after a sighting a slightly different number in the same place
     /// is still treated as a misread of the same bib.
     var mergeWindow: TimeInterval = 0.5

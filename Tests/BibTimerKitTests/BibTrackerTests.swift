@@ -36,7 +36,7 @@ final class BibTrackerTests: XCTestCase {
         XCTAssertEqual(event.firstSeen, 10, accuracy: 1e-9)
 
         // Once the bib has been gone for a while the track is closed.
-        let later = tracker.process(time: 12, detections: []).events
+        let later = tracker.process(time: 13, detections: []).events
         XCTAssertEqual(later.count, 1)
         XCTAssertEqual(later.first?.ended, true)
         XCTAssertEqual(later.first?.isNew, false)
@@ -51,14 +51,31 @@ final class BibTrackerTests: XCTestCase {
         XCTAssertTrue(tracker.process(time: 1.1, detections: [detection("7", y: 0.40)]).events.isEmpty)
         XCTAssertTrue(tracker.process(time: 1.2, detections: [detection("7", y: 0.50)]).events.isEmpty)
         // Still within the timeout: nothing yet.
-        XCTAssertTrue(tracker.process(time: 2.0, detections: []).events.isEmpty)
+        XCTAssertTrue(tracker.process(time: 3.0, detections: []).events.isEmpty)
 
-        let events = tracker.process(time: 3.0, detections: []).events
+        let events = tracker.process(time: 3.5, detections: []).events
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.timing, .estimated)
         XCTAssertEqual(events.first?.time ?? 0, 1.2, accuracy: 1e-9)
         XCTAssertEqual(events.first?.isNew, true)
         XCTAssertEqual(events.first?.ended, true)
+    }
+
+    func testBibHiddenForAMomentIsStillTimedAtTheLine() {
+        var tracker = makeTracker()
+        // Read twice on the way in, hidden behind another runner for 1.5 s,
+        // then read again past the line.
+        XCTAssertTrue(tracker.process(time: 1.0, detections: [detection("64", y: 0.30)]).events.isEmpty)
+        XCTAssertTrue(tracker.process(time: 1.1, detections: [detection("64", y: 0.35)]).events.isEmpty)
+        for step in 1...14 {
+            XCTAssertTrue(tracker.process(time: 1.1 + Double(step) * 0.1, detections: []).events.isEmpty)
+        }
+        let events = tracker.process(time: 2.6, detections: [detection("64", y: 0.85)]).events
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.timing, .line)
+        // Half-way between the two sightings either side of the line.
+        XCTAssertEqual(events.first?.time ?? 0, 1.85, accuracy: 1e-6)
+        XCTAssertEqual(tracker.activeTrackCount, 1)
     }
 
     func testBibFirstReadPastTheLineGetsItsFirstSighting() {
