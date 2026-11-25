@@ -46,7 +46,12 @@ final class TextRecognizer {
 
         request.recognitionLevel = options.accurate ? .accurate : .fast
         request.minimumTextHeight = Float(min(max(options.minimumTextHeight, 0), 0.5))
-        request.regionOfInterest = CGRect(x: visionRegion.x, y: visionRegion.y, width: visionRegion.width, height: visionRegion.height)
+        // The region must lie inside the image; make sure a rounding error
+        // cannot push it out.
+        let unit = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let wanted = CGRect(x: visionRegion.x, y: visionRegion.y, width: visionRegion.width, height: visionRegion.height)
+        let allowed = wanted.intersection(unit)
+        request.regionOfInterest = allowed.isNull || allowed.isEmpty ? unit : allowed
 
         try handler.perform([request])
 

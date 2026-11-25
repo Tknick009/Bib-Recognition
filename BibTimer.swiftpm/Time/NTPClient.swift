@@ -173,8 +173,10 @@ final class NTPClient {
         timeoutWork?.cancel()
         lastError = error
         failuresInARow += 1
-        // Two losses in a row: the server is not there. Don't keep trying.
-        if failuresInARow >= 2 {
+        // A server that answered and then goes quiet is limiting how often it
+        // may be asked, so stop there. One that has not answered at all gets
+        // one more try.
+        if !samples.isEmpty || failuresInARow >= 2 {
             finish()
         } else {
             scheduleNext()

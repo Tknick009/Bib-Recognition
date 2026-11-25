@@ -28,6 +28,12 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+      - name: Can this machine reach NTP servers at all?
+        run: |
+          for server in time.apple.com time.cloudflare.com pool.ntp.org; do
+            echo "== $server"
+            sntp -t 4 "$server" || echo "no answer from $server"
+          done
       - name: Unit tests, including text recognition and the NTP client
         run: swift test
       - name: Compile every app source file for iOS
@@ -45,7 +51,6 @@ jobs:
           grep -q "BUILD SUCCEEDED" .build/xcodebuild-ios.log
       - name: Build the app project itself for the iOS Simulator
         if: success() || failure()
-        continue-on-error: true
         working-directory: BibTimer.swiftpm
         run: |
           set -o pipefail

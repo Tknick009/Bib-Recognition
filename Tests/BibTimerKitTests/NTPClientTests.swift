@@ -99,23 +99,31 @@ final class NTPClientTests: XCTestCase {
         }
     }
 
-    func testPublicServerWhenReachable() async throws {
+    func testPublicServersWhenReachable() async throws {
         let clock = SystemMonotonicClock()
-        let configuration = NTPClient.Configuration(samples: 3, spacing: 0.3, timeout: 3)
-        let result = await NTPClient.samples(host: "time.apple.com", clock: clock, configuration: configuration)
-        guard case .success(let samples) = result, let best = NTPSelection.best(of: samples) else {
-            throw XCTSkip("no answer from time.apple.com (\(result)); skipping the live check")
-        }
+        let configuration = NTPClient.Configuration(samples: 3, spacing: 0.3, timeout: 2)
+        var reached = 0
+        for host in ["time.apple.com", "time.cloudflare.com", "pool.ntp.org"] {
+            let result = await NTPClient.samples(host: host, clock: clock, configuration: configuration)
+            guard case .success(let samples) = result, let best = NTPSelection.best(of: samples) else {
+                print("Live NTP client check: no answer from \(host) (\(result))")
+                continue
+            }
+            reached += 1
 
-        // This machine's clock is itself kept on time, so the two should
-        // agree to well within a few seconds.
-        let ntpNow = best.utcMinusMono + clock.now()
-        let deviceError = Date().timeIntervalSince1970 - ntpNow
-        print("Live NTP check: \(samples.count) samples, stratum \(best.stratum), round trip \(best.delay) s, " +
-              "error bound \(best.errorBound) s, this machine's clock is off by \(deviceError) s")
-        XCTAssertLessThan(abs(deviceError), 5)
-        XCTAssertLessThan(best.delay, 3)
-        XCTAssertTrue((1...15).contains(best.stratum))
+            // This machine's clock is itself kept on time, so the two should
+            // agree to well within a few seconds.
+            let ntpNow = best.utcMinusMono + clock.now()
+            let deviceError = Date().timeIntervalSince1970 - ntpNow
+            print("Live NTP client check: \(host) gave \(samples.count) samples, stratum \(best.stratum), " +
+                  "round trip \(best.delay) s, error bound \(best.errorBound) s; this machine's clock is off by \(deviceError) s")
+            XCTAssertLessThan(abs(deviceError), 5, host)
+            XCTAssertLessThan(best.delay, 2, host)
+            XCTAssertTrue((1...15).contains(best.stratum), host)
+        }
+        if reached == 0 {
+            throw XCTSkip("no public time server answered from this machine; skipping the live check")
+        }
     }
 }
 #endif

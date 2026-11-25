@@ -94,12 +94,19 @@ struct RaceView: View {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         .onDisappear {
+            // The race stays open in the store: stopping the camera hands over
+            // the bibs still being followed, and those arrive a moment later.
             capture.stopCamera()
-            store.close()
+            store.flush()
             UIApplication.shared.isIdleTimerDisabled = false
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active {
+            if phase == .active {
+                // Camera access may have been granted in Settings meanwhile.
+                if capture.cameraState == .denied {
+                    capture.startCamera()
+                }
+            } else {
                 // Whatever happens next, the results are on disk.
                 store.flush(synchronously: true)
             }

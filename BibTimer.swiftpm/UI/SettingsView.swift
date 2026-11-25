@@ -167,7 +167,7 @@ struct SettingsView: View {
         } header: {
             Text("Camera")
         } footer: {
-            Text("A shutter limit keeps moving bibs sharp; in poor light choose a slower one or Automatic. 4K reads bibs from further away but each scan takes longer. Fewer scans per second keep the iPad cooler on a long day.")
+            Text("A short exposure keeps moving bibs sharp; in poor light choose a longer one or Automatic. 4K records more detail: lower Smallest text as well to read bibs further away, at the cost of slower scans. Fewer scans per second keep the iPad cooler on a long day.")
         }
     }
 
