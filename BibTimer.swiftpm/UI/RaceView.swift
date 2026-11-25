@@ -48,6 +48,7 @@ struct RaceView: View {
         // dragging handles around the picture, there is no Back button and no
         // swipe back, so that cannot happen by accident: stop first.
         .navigationBarBackButtonHidden(capture.isRecording || isAdjusting)
+        .background(BackSwipeLock(isLocked: capture.isRecording || isAdjusting))
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -301,6 +302,74 @@ struct RaceView: View {
         }
         .controlSize(.large)
         .font(.headline)
+    }
+}
+
+/// Switches off the swipes that go back to the list of races for as long as
+/// going back would end a recording.
+///
+/// Hiding the Back button is meant to do that already. This makes sure of it,
+/// including for the swipe that newer systems accept anywhere on the screen
+/// and which a drag across the video or the results could otherwise set off.
+private struct BackSwipeLock: UIViewControllerRepresentable {
+    var isLocked: Bool
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller()
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.isLocked = isLocked
+    }
+
+    final class Controller: UIViewController {
+        var isLocked = false {
+            didSet {
+                if isLocked != oldValue { apply() }
+            }
+        }
+
+        /// The navigation controller whose swipes this has switched off. They
+        /// are only ever switched back on by whoever switched them off.
+        private weak var held: UINavigationController?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            // Only now is it certain which navigation controller this is in.
+            apply()
+        }
+
+        override func viewWillDisappear(_ animated: Bool) {
+            super.viewWillDisappear(animated)
+            giveBack()
+        }
+
+        private func apply() {
+            if !isLocked {
+                giveBack()
+            } else if held == nil, let navigation = navigationController {
+                Controller.setSwipes(enabled: false, on: navigation)
+                held = navigation
+            }
+        }
+
+        private func giveBack() {
+            guard let navigation = held else { return }
+            Controller.setSwipes(enabled: true, on: navigation)
+            held = nil
+        }
+
+        private static func setSwipes(enabled: Bool, on navigation: UINavigationController) {
+            navigation.interactivePopGestureRecognizer?.isEnabled = enabled
+            // Newer systems have a second recognizer, for a swipe across the
+            // content. It is looked up by name so that the app still builds
+            // with tools that do not know it yet.
+            let name = "interactiveContentPopGestureRecognizer"
+            if navigation.responds(to: NSSelectorFromString(name)),
+               let recognizer = navigation.value(forKey: name) as? UIGestureRecognizer {
+                recognizer.isEnabled = enabled
+            }
+        }
     }
 }
 
