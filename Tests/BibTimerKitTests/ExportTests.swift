@@ -62,6 +62,38 @@ final class ExportTests: XCTestCase {
         XCTAssertNil(TimeFormat.parseTimeOfDay(""))
     }
 
+    /// The moment as seconds since 1970; fails the test if there is none.
+    private func seconds(_ moment: Date?, file: StaticString = #filePath, line: UInt = #line) throws -> Double {
+        try XCTUnwrap(moment, file: file, line: line).timeIntervalSince1970
+    }
+
+    func testATypedTimeOfDayBecomesAMomentOnThatDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = utc
+        let noon = date(newYear2021 + 12 * 3600)
+        XCTAssertEqual(try seconds(TimeFormat.moment(on: noon, secondsIntoDay: 34_200, calendar: calendar)), newYear2021 + 34_200, accuracy: 1e-6)
+        XCTAssertEqual(try seconds(TimeFormat.moment(on: noon, secondsIntoDay: 0, calendar: calendar)), newYear2021, accuracy: 1e-6)
+        XCTAssertEqual(try seconds(TimeFormat.moment(on: noon, secondsIntoDay: 86_399.5, calendar: calendar)), newYear2021 + 86_399.5, accuracy: 1e-6)
+        XCTAssertNil(TimeFormat.moment(on: noon, secondsIntoDay: 86_400, calendar: calendar))
+        XCTAssertNil(TimeFormat.moment(on: noon, secondsIntoDay: -1, calendar: calendar))
+    }
+
+    func testATypedTimeOfDayIsRightOnTheDayTheClocksChange() throws {
+        guard let newYork = TimeZone(identifier: "America/New_York") else {
+            throw XCTSkip("this machine has no time zone data")
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = newYork
+        // Sunday 1 November 2026: at 2:00 the clocks in New York go back an
+        // hour, so 9:30 comes ten and a half hours after midnight.
+        let thatDay = date(1_793_534_400) // 12:00 UTC, 7:00 in New York
+        XCTAssertEqual(try seconds(TimeFormat.moment(on: thatDay, secondsIntoDay: 0, calendar: calendar)), 1_793_505_600, accuracy: 1e-6)
+        let halfPastNine = try XCTUnwrap(TimeFormat.moment(on: thatDay, secondsIntoDay: 34_200.25, calendar: calendar))
+        XCTAssertEqual(halfPastNine.timeIntervalSince1970, 1_793_543_400.25, accuracy: 1e-6)
+        XCTAssertEqual(TimeFormat.timeOfDay(halfPastNine, timeZone: newYork, decimals: 2), "09:30:00.25")
+        XCTAssertEqual(TimeFormat.localDate(halfPastNine, timeZone: newYork), "2026-11-01")
+    }
+
     // MARK: CSV
 
     private func crossing(_ bib: String, at seconds: Double) -> Crossing {

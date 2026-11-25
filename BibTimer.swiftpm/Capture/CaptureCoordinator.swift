@@ -27,8 +27,8 @@ final class CaptureCoordinator: ObservableObject {
     let overlay = OverlayModel()
     let camera = CameraController()
 
-    /// Receives what the camera recorded.
-    var sightingHandler: (([BibSighting]) -> Void)?
+    /// Receives what the camera recorded, and the race it was recorded for.
+    var sightingHandler: (([BibSighting], UUID) -> Void)?
 
     private let pipeline: CapturePipeline
     private var settings = AppSettings()
@@ -36,6 +36,11 @@ final class CaptureCoordinator: ObservableObject {
     private var cameraIsWanted = false
     /// Identifies the current (or most recent) recording.
     private var generation = 0
+    /// Which race each recent recording belongs to. Results are matched to
+    /// their recording, not to whatever is current when they arrive: the last
+    /// ones of a recording come in after it has been stopped, possibly after
+    /// the next has begun.
+    private var recordingRaces: [Int: UUID] = [:]
     private var lastResultTime: Double?
     private let monotonic = SystemMonotonicClock()
 
@@ -113,14 +118,16 @@ final class CaptureCoordinator: ObservableObject {
 
     // MARK: Recording
 
-    func startRecording() {
+    func startRecording(raceID: UUID) {
         guard !isRecording else { return }
-        generation += 1
+        let recording = generation + 1
+        generation = recording
+        recordingRaces[recording] = raceID
+        recordingRaces = recordingRaces.filter { $0.key > recording - 4 }
         isRecording = true
         let pipeline = self.pipeline
-        let generation = self.generation
         camera.performOnVideoQueue {
-            pipeline.beginRecording(generation: generation)
+            pipeline.beginRecording(generation: recording)
         }
     }
 
@@ -134,9 +141,9 @@ final class CaptureCoordinator: ObservableObject {
     }
 
     private func receive(_ result: FrameResult) {
-        // Results of an earlier recording, or of previewing, are not recorded.
-        if result.generation == generation, generation != 0, !result.sightings.isEmpty {
-            sightingHandler?(result.sightings)
+        // What was seen while only previewing belongs to no recording.
+        if !result.sightings.isEmpty, let raceID = recordingRaces[result.generation] {
+            sightingHandler?(result.sightings, raceID)
         }
         guard result.frameWidth > 0, cameraIsWanted else { return }
 

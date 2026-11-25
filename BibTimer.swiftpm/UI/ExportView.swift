@@ -67,6 +67,10 @@ struct ExportView: View {
                 copied = false
                 writeFile()
             }
+            // Results that come in while this is open belong in the file too.
+            .onChange(of: store.race) { _, _ in
+                writeFile()
+            }
         }
     }
 

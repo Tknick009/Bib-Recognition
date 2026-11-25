@@ -216,4 +216,11 @@ final class RaceTests: XCTestCase {
         let roster = RosterParser.parse("1,Ana\r\n2,Ben\r\n")
         XCTAssertEqual(roster, [RosterEntry(bib: "1", name: "Ana"), RosterEntry(bib: "2", name: "Ben")])
     }
+
+    func testRosterParsingSkipsTheInvisibleMarkSpreadsheetsPutFirst() {
+        // Files saved as "CSV UTF-8" start with a byte order mark, which
+        // would otherwise hide the first runner's bib number.
+        let roster = RosterParser.parse("\u{FEFF}101,Jane Doe\r\n102,John Smith\r\n")
+        XCTAssertEqual(roster, [RosterEntry(bib: "101", name: "Jane Doe"), RosterEntry(bib: "102", name: "John Smith")])
+    }
 }

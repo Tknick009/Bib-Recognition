@@ -145,6 +145,36 @@ final class HubTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(HubPush.self, from: JSONEncoder().encode(push)), push)
     }
 
+    func testUploadsAreSmall() throws {
+        // What goes out while a race is under way is counted in bytes: this
+        // is what keeps a whole race within a megabyte or two of mobile data.
+        var current = race([crossing("1041", at: 1512.347)])
+        current.crossings[0].confidence = Double(Float(0.3))
+        current.crossings[0].source = .camera
+        current.crossings[0].timing = .line
+        let known = try XCTUnwrap(accept(plan(current, known: nil), known: nil))
+
+        // With nothing new, only a sign of life.
+        XCTAssertLessThan(plan(current, known: known).encodedSize, 160)
+
+        // One more result.
+        current.crossings.append(crossing("977", at: 1513.021))
+        current.crossings[1].confidence = Double(Float(0.9))
+        let one = plan(current, known: known)
+        XCTAssertEqual(one.crossings.count, 1)
+        XCTAssertLessThan(one.encodedSize, 330)
+        XCTAssertEqual(one.encodedSize, try JSONEncoder().encode(one).count)
+
+        // Times go out as whole milliseconds and certainty as two decimals,
+        // not with every digit a 64-bit number can hold.
+        let sent = one.crossings[0]
+        XCTAssertEqual(sent.time, base + 1513.021, accuracy: 1e-6)
+        XCTAssertEqual(sent.confidence, 0.9)
+        let text = String(decoding: try JSONEncoder().encode(sent), as: UTF8.self)
+        XCTAssertLessThan(text.utf8.count, 190, text)
+        XCTAssertTrue(text.contains("\"confidence\":0.9,") || text.contains("\"confidence\":0.9}"), text)
+    }
+
     // MARK: Event codes
 
     func testEventCodeFromNameAndDate() {
@@ -173,6 +203,31 @@ final class HubTests: XCTestCase {
         XCTAssertEqual(HubPlanner.normalizedCode("  Spring 5K — Finish  "), "spring-5k-finish")
         XCTAssertEqual(HubPlanner.normalizedCode("spring-5k-20261125"), "spring-5k-20261125")
         XCTAssertEqual(HubPlanner.normalizedCode("!!!"), "")
+    }
+
+    func testASecondRaceWithTheSameNameGetsItsOwnCode() {
+        // Two races on one iPad must never share a code: the second would
+        // replace the first's results on the server.
+        XCTAssertEqual(HubPlanner.unusedCode("dash-20261125", taken: []), "dash-20261125")
+        XCTAssertEqual(HubPlanner.unusedCode("dash-20261125", taken: ["other-20261125"]), "dash-20261125")
+        XCTAssertEqual(HubPlanner.unusedCode("dash-20261125", taken: ["dash-20261125"]), "dash-20261125-2")
+        XCTAssertEqual(HubPlanner.unusedCode("dash-20261125", taken: ["dash-20261125", "dash-20261125-2"]), "dash-20261125-3")
+
+        let longest = String(repeating: "a", count: 50)
+        let next = HubPlanner.unusedCode(longest, taken: [longest])
+        XCTAssertEqual(next, String(repeating: "a", count: 48) + "-2")
+        XCTAssertTrue(HubPlanner.isValidCode(next), next)
+    }
+
+    // MARK: Access keys
+
+    func testAnAccessKeyIsReadTheWayItWasTyped() {
+        XCTAssertEqual(HubPlanner.normalizedKey("  finish-line-key \n"), "finish-line-key")
+        // A keyboard may have swapped in typographic quotes and dashes.
+        XCTAssertEqual(HubPlanner.normalizedKey("it\u{2019}s\u{2014}mine"), "it's--mine")
+        XCTAssertEqual(HubPlanner.normalizedKey("\u{201C}north\u{201D}\u{2013}gate\u{2026}"), "\"north\"-gate...")
+        XCTAssertEqual(HubPlanner.normalizedKey("k7Qm2vXw9LrT4hZsB1nYc8Dp"), "k7Qm2vXw9LrT4hZsB1nYc8Dp")
+        XCTAssertEqual(HubPlanner.normalizedKey("   "), "")
     }
 
     // MARK: Addresses

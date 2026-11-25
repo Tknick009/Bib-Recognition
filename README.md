@@ -167,7 +167,8 @@ Settings).
   the number afterwards.
 - Tap **Stop** when the race is over.
 
-Keep the app on screen while recording. The iPad is kept awake.
+Keep the app on screen while recording. The iPad is kept awake, and the Back
+button is hidden until you tap Stop, so the race cannot be left by accident.
 
 ### 6. Check and correct
 
@@ -247,12 +248,16 @@ but not change them, for an announcer or a results screen.
 On every iPad:
 
 1. **Settings → Live results**: enter the address and the access key, then tap
-   **Check the connection**.
+   **Connect**. The iPad starts using them once the hub has answered and
+   accepted the key; until then nothing changes, so a mistyped address or key
+   cannot interrupt uploads that already work.
 2. **Settings → Station name**: give each iPad its own (*Start*, *Finish A*).
 3. **⋯ → Race setup → Live results**: check the **event code**. Every iPad at
    the event must show the same one, because that is how their results are
    combined. iPads on which the race was created with the same name on the same
-   day already agree; otherwise edit the code on one of them to match.
+   day already agree; otherwise edit the code on one of them to match. (A
+   second race with the same name on the same iPad and day gets a code ending
+   in `-2`, so that it can never overwrite the first.)
 
 A badge next to the clock badge shows the state: **Shared** (everything is on
 the hub), **Sending 3** (three results still to go) or **Not sent yet** (no
@@ -263,7 +268,7 @@ connection at the moment; it keeps trying).
 The hub's page lists the results of all iPads in order, updating every couple
 of seconds. You can hide a station, show one row per bib (the earliest, useful
 with two iPads on the same line), and download the CSV. Each station shows when
-it was last heard from; an iPad checks in every 30 seconds even when nothing is
+it was last heard from; an iPad checks in every 45 seconds even when nothing is
 happening, so a station that has been silent for a few minutes has lost its
 connection or its app has been closed.
 
@@ -297,6 +302,51 @@ name and your notes. Not sent: photos, and the names on the start list.
 Everything travels over HTTPS, and nothing can be read or written without the
 key. Treat the key, and any link that contains it, like a password. To change
 it, change `HUB_KEY` on Railway and enter the new one on the iPads.
+
+### How much mobile data it uses
+
+Very little. Only numbers and times are sent, never video or photos. These
+figures were measured by running a simulated race against the real hub over an
+encrypted connection and counting every byte in both directions, for **one
+iPad with the app open for two hours**:
+
+| Results recorded on that iPad | Data used by that iPad |
+| --- | --- |
+| 150 | about 0.3 MB |
+| 300 | about 0.4 MB |
+| 600 | about 0.6 MB |
+| 1,000 | about 0.9 MB |
+| 2,000 | about 1.5 MB |
+
+So a whole race on three iPads is a megabyte or two: about what a single web
+page with pictures uses.
+
+- These are the figures when the connection to the hub stays open between
+  uploads. The app keeps it open by checking in every 45 seconds. On a poor
+  signal the iPad has to reconnect, which costs more: in the worst case, a new
+  connection for every single upload, about five times as much (1.5 MB for 150
+  results, 7 MB for 2,000).
+- What the pieces cost: a result is about 170 bytes, and the upload that
+  carries it just under 1 KB (results that arrive together share one upload).
+  A check-in with nothing new is just under 1 KB. Reopening the app during a
+  race sends that race again in one go: about 85 KB for 500 results.
+- The time sync adds roughly 30 KB an hour (worked out from the size of the
+  packets, not measured).
+- **Race setup → Live results** shows an estimate of what the iPad's uploads
+  have used since the app was opened, so after a dry run you can see the figure
+  for your own set-up. It does not count reconnecting.
+
+On the **scoring computer**, opening the live page with 400 results already in
+takes about 27 KB. After that the page only fetches what is new: at most about
+1 MB an hour while it stays open, and well under 1 KB per result. Downloading
+the CSV file of 460 results takes 4 KB.
+
+iPadOS itself can use far more data than all of this, for example by syncing
+photos or downloading updates. To stop that on race day, switch on **Low Data
+Mode** for the connection the iPads use (*Settings → Cellular → Cellular Data
+Options*, or for a hotspot *Settings → Wi-Fi →* ⓘ next to its name). It pauses
+the system's own background downloads; Bib Timer's uploads and time sync carry
+on.
 
 ### Running the hub somewhere else
 
@@ -410,6 +460,9 @@ bib,time_of_day,elapsed
   the moment. Results are safe on the iPad and are sent when the connection
   returns. If it never clears, use *Check the connection* in Settings: it says
   whether the address or the key is the problem.
+- **A new hub address or key is not being used.** It only comes into use when
+  **Connect** in Settings has succeeded. The message under the button says what
+  went wrong.
 - **The hub page shows two events for one race.** The iPads are using different
   event codes. Make them the same in Race setup; the iPad then sends its
   results under the new code. Clear away the stray one, and anything left from

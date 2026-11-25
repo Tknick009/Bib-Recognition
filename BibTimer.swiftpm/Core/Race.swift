@@ -282,6 +282,9 @@ enum RosterParser {
     static func parse(_ text: String) -> [RosterEntry] {
         var seen = Set<String>()
         var entries: [RosterEntry] = []
+        // Spreadsheets often start a file with an invisible byte-order mark,
+        // which would otherwise stick to the first bib number.
+        let text = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
         for line in text.split(whereSeparator: { $0.isNewline }) {
             let columns = splitColumns(line.trimmingCharacters(in: .whitespaces))
             guard let first = columns.first, let bib = BibFilter.canonical(first) else { continue }

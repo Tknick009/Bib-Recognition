@@ -44,6 +44,10 @@ struct RaceView: View {
         }
         .navigationTitle(store.race?.name ?? "Race")
         .navigationBarTitleDisplayMode(.inline)
+        // Leaving this screen stops the camera. While recording, or while
+        // dragging handles around the picture, there is no Back button and no
+        // swipe back, so that cannot happen by accident: stop first.
+        .navigationBarBackButtonHidden(capture.isRecording || isAdjusting)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -102,8 +106,10 @@ struct RaceView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                // Camera access may have been granted in Settings meanwhile.
-                if capture.cameraState == .denied {
+                // Back in front. If the camera is not running (access was
+                // only just granted in Settings, or it did not come back by
+                // itself after being interrupted), start it.
+                if capture.cameraState != .running {
                     capture.startCamera()
                 }
             } else {
@@ -143,9 +149,6 @@ struct RaceView: View {
                     ScanRateBadge(model: capture.overlay)
                 }
                 Spacer()
-                if isAdjusting {
-                    adjustBar
-                }
             }
             .padding(10)
         }
@@ -180,6 +183,8 @@ struct RaceView: View {
     }
 
     /// Controls shown while the finish line and scan zone are being set up.
+    /// They take the place of the clock, beside the picture rather than on it,
+    /// so every handle stays within reach.
     private var adjustBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(settingsStore.settings.timingMode == .line
@@ -208,8 +213,6 @@ struct RaceView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     // MARK: Clock, controls and results
@@ -238,8 +241,12 @@ struct RaceView: View {
                             .help(message)
                     }
                 }
-                ClockDisplay(clock: time.clock, startTime: store.race?.startTime)
-                controls
+                if isAdjusting {
+                    adjustBar
+                } else {
+                    ClockDisplay(clock: time.clock, startTime: store.race?.startTime)
+                    controls
+                }
             }
             .padding(12)
             Divider()
@@ -260,7 +267,7 @@ struct RaceView: View {
                 if capture.isRecording {
                     capture.stopRecording()
                 } else {
-                    capture.startRecording()
+                    capture.startRecording(raceID: raceID)
                 }
             } label: {
                 Label(capture.isRecording ? "Stop" : "Record",

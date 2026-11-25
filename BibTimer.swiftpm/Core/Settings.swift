@@ -61,7 +61,7 @@ struct AppSettings: Codable, Equatable {
 
     /// The hub to send results to, if one has been set up completely.
     var hub: (base: URL, key: String)? {
-        let key = hubKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = HubPlanner.normalizedKey(hubKey)
         guard !key.isEmpty, let base = HubPlanner.baseURL(from: hubAddress) else { return nil }
         return (base, key)
     }

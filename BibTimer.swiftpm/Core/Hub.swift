@@ -28,12 +28,14 @@ struct HubCrossing: Codable, Equatable {
     init(_ crossing: Crossing) {
         id = crossing.id.uuidString
         bib = crossing.bib
-        time = crossing.time.timeIntervalSince1970
+        // Whole milliseconds, as in every export. Finer digits would mean
+        // nothing and only make each upload longer.
+        time = (crossing.time.timeIntervalSince1970 * 1000).rounded() / 1000
         timing = crossing.timing.rawValue
         source = crossing.source.rawValue
         clock = crossing.clock.source.rawValue
-        clockError = crossing.clock.uncertainty
-        confidence = crossing.confidence
+        clockError = crossing.clock.uncertainty.map { ($0 * 10_000).rounded() / 10_000 }
+        confidence = crossing.confidence.map { ($0 * 100).rounded() / 100 }
         note = crossing.note
     }
 }
@@ -55,6 +57,11 @@ struct HubPush: Codable, Equatable {
     /// True if the upload changes nothing on the hub except "last heard from".
     var isHeartbeat: Bool {
         !full && crossings.isEmpty && deleted.isEmpty
+    }
+
+    /// How many bytes the upload's contents take up when sent.
+    var encodedSize: Int {
+        (try? JSONEncoder().encode(self))?.count ?? 0
     }
 }
 
@@ -174,6 +181,19 @@ enum HubPlanner {
         return code.allSatisfy { codeCharacters.contains($0) }
     }
 
+    /// `code` itself if no other race uses it, otherwise the first of
+    /// `code-2`, `code-3`… that is free.
+    static func unusedCode(_ code: String, taken: Set<String>) -> String {
+        guard taken.contains(code) else { return code }
+        var number = 2
+        while true {
+            let suffix = "-\(number)"
+            let candidate = String(code.prefix(50 - suffix.count)).trimmingCharacters(in: CharacterSet(charactersIn: "-")) + suffix
+            if !taken.contains(candidate) { return candidate }
+            number += 1
+        }
+    }
+
     private static let codeCharacters = Set("abcdefghijklmnopqrstuvwxyz0123456789-")
 
     private static func slug(_ text: String) -> String {
@@ -186,6 +206,20 @@ enum HubPlanner {
             }
         }
         return result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+
+    // MARK: Access keys
+
+    /// An access key as typed, without the changes a keyboard may have made
+    /// to it: surrounding spaces, and "smart" quotes and dashes put in place
+    /// of the plain ones that were typed.
+    static func normalizedKey(_ text: String) -> String {
+        var key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        for (smart, plain) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201C}", "\""), ("\u{201D}", "\""),
+                               ("\u{2014}", "--"), ("\u{2013}", "-"), ("\u{2026}", "...")] {
+            key = key.replacingOccurrences(of: smart, with: plain)
+        }
+        return key
     }
 
     // MARK: Addresses

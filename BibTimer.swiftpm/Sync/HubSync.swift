@@ -25,9 +25,33 @@ final class HubSync: ObservableObject {
         case failed(String)
     }
 
+    /// The settings uploading depends on.
+    struct Config: Equatable {
+        var address = ""
+        var key = ""
+        var station = ""
+
+        init() {}
+
+        init(_ settings: AppSettings) {
+            address = settings.hubAddress
+            key = settings.hubKey
+            station = settings.station
+        }
+
+        /// Where to send results, if a server has been set up completely.
+        var server: (base: URL, key: String)? {
+            let trimmed = HubPlanner.normalizedKey(key)
+            guard !trimmed.isEmpty, let base = HubPlanner.baseURL(from: address) else { return nil }
+            return (base, trimmed)
+        }
+    }
+
     @Published private(set) var status = Status.off
     /// The event code the open race is sent under, when it is being sent.
     @Published private(set) var eventCode: String?
+    /// Roughly how many bytes the uploads have used since the app was opened.
+    @Published private(set) var dataUsed = 0
 
     /// Where one race's results go.
     private struct Target: Equatable {
@@ -39,11 +63,20 @@ final class HubSync: ObservableObject {
 
     /// How often to check in when there is nothing new, so the scoring
     /// computer can see that this iPad is still connected.
-    private static let heartbeat = 30.0
+    ///
+    /// Hosting services close a connection that has been idle for a while,
+    /// commonly after 60 seconds. Checking in a little more often than that
+    /// keeps the one connection open, which costs far less data than
+    /// connecting afresh each time.
+    private static let heartbeat = 45.0
+    /// What an upload costs besides its contents: the request and reply
+    /// headers and the encryption around them. Measured at a little under
+    /// 800 bytes; connections that compress headers use less.
+    private static let overheadPerUpload = 800
 
     private let deviceID: String
     private let monotonic = SystemMonotonicClock()
-    private var settings = AppSettings()
+    private var config = Config()
     private var race: Race?
     /// What the hub holds for `knownTarget`; nil when that is uncertain.
     private var known: HubKnownState?
@@ -64,10 +97,16 @@ final class HubSync: ObservableObject {
         }
     }
 
-    /// Follows the open race and the settings.
-    func update(race: Race?, settings: AppSettings) {
-        self.race = race
-        self.settings = settings
+    /// Follows the settings.
+    func update(config newConfig: Config) {
+        guard newConfig != config else { return }
+        config = newConfig
+        refreshStatus()
+    }
+
+    /// Follows the open race.
+    func update(race newRace: Race?) {
+        race = newRace
         refreshStatus()
     }
 
@@ -83,12 +122,12 @@ final class HubSync: ObservableObject {
     }
 
     private var target: Target? {
-        guard let race, race.hubPaused != true, let hub = settings.hub else { return nil }
-        return Target(raceID: race.id, code: race.eventCode(timeZone: .current), base: hub.base, key: hub.key)
+        guard let race, race.hubPaused != true, let server = config.server else { return nil }
+        return Target(raceID: race.id, code: race.eventCode(timeZone: .current), base: server.base, key: server.key)
     }
 
     private func plan(for race: Race) -> HubPush {
-        HubPlanner.push(for: race, station: settings.station, timeZone: TimeZone.current.identifier, known: known)
+        HubPlanner.push(for: race, station: config.station, timeZone: TimeZone.current.identifier, known: known)
     }
 
     /// Sends what is due, if anything.
@@ -111,10 +150,18 @@ final class HubSync: ObservableObject {
         lastAttempt = now
 
         let outcome: Result<HubReply, Error>
+        // False when nothing got through, so that next to nothing was used.
+        var reachedServer = true
         do {
             outcome = .success(try await HubClient(base: target.base, key: target.key).send(push, code: target.code, device: deviceID))
         } catch {
+            if let failure = error as? HubClient.Failure, case .unreachable = failure {
+                reachedServer = false
+            }
             outcome = .failure(error)
+        }
+        if reachedServer {
+            dataUsed += push.encodedSize + HubSync.overheadPerUpload
         }
         // The race or the settings may have changed while the upload was
         // under way; if so this answer no longer says anything useful.
@@ -140,7 +187,10 @@ final class HubSync: ObservableObject {
 
     private func noteFailure(_ message: String) {
         failures += 1
-        lastError = message
+        // A single failed attempt is not reported: a connection that has sat
+        // idle is sometimes closed just as it is used again, and the next
+        // attempt, two seconds later, goes through.
+        lastError = failures >= 2 ? message : nil
         // 2, 4, 8 … seconds between attempts, up to a minute.
         retryAfter = monotonic.now() + min(60, pow(2, Double(min(failures, 6))))
     }
@@ -148,7 +198,7 @@ final class HubSync: ObservableObject {
     private func refreshStatus() {
         let newStatus: Status
         var newCode: String?
-        if settings.hub == nil {
+        if config.server == nil {
             newStatus = .off
         } else if let race {
             if race.hubPaused == true {
@@ -170,6 +220,14 @@ final class HubSync: ObservableObject {
         }
         if status != newStatus { status = newStatus }
         if eventCode != newCode { eventCode = newCode }
+    }
+
+    /// "850 KB" or "1.3 MB".
+    nonisolated static func formatData(_ bytes: Int) -> String {
+        if bytes < 1_000_000 {
+            return "\(max(bytes, 0) / 1000) KB"
+        }
+        return String(format: "%.1f MB", Double(bytes) / 1_000_000)
     }
 }
 #endif

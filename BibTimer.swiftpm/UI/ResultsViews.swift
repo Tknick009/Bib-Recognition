@@ -148,6 +148,9 @@ struct CrossingEditor: View {
 
     @State private var bibText = ""
     @State private var note = ""
+    /// What the fields showed when the editor opened.
+    @State private var openedBib = ""
+    @State private var openedNote = ""
     @State private var loaded = false
     @FocusState private var bibFocused: Bool
 
@@ -213,8 +216,15 @@ struct CrossingEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        store.setBib(bibText, for: crossingID)
-                        store.setNote(note, for: crossingID)
+                        // Only what was actually edited is written, so a
+                        // number the camera corrected in the meantime is not
+                        // put back to what it was when this opened.
+                        if bibText != openedBib {
+                            store.setBib(bibText, for: crossingID)
+                        }
+                        if note != openedNote {
+                            store.setNote(note, for: crossingID)
+                        }
                         dismiss()
                     }
                 }
@@ -224,8 +234,16 @@ struct CrossingEditor: View {
                 loaded = true
                 bibText = crossing.bib
                 note = crossing.note
-                // A mark without a number is opened to type the number.
-                bibFocused = crossing.bib.isEmpty
+                openedBib = crossing.bib
+                openedNote = crossing.note
+                // A mark without a number is opened to type the number. The
+                // keyboard only comes up once the sheet has settled.
+                if crossing.bib.isEmpty {
+                    Task {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        bibFocused = true
+                    }
+                }
             }
         }
     }

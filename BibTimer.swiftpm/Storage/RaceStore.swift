@@ -43,6 +43,8 @@ final class RaceStore: ObservableObject {
         var name: String
         var createdAt: Date
         var count: Int
+        /// The code under which the race's results go to the results hub.
+        var code: String
     }
 
     @Published private(set) var summaries: [Summary] = []
@@ -69,11 +71,14 @@ final class RaceStore: ObservableObject {
     func createRace(named name: String) -> UUID {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         var race = Race(name: trimmed.isEmpty ? "Race" : trimmed)
-        // Fixed now, so that it does not change if the race is renamed or the
-        // iPad moves to another time zone.
-        race.hubCode = race.eventCode(timeZone: .current)
+        // The event code is fixed now, so that it does not change if the race
+        // is renamed or the iPad moves to another time zone. Two races on
+        // this iPad must not share one: on the results hub the second would
+        // replace the first.
+        let code = race.eventCode(timeZone: .current)
+        race.hubCode = HubPlanner.unusedCode(code, taken: Set(summaries.map(\.code)))
         write(race, synchronously: true)
-        summaries.insert(Summary(id: race.id, name: race.name, createdAt: race.createdAt, count: 0), at: 0)
+        summaries.insert(RaceStore.summary(of: race), at: 0)
         return race.id
     }
 
@@ -112,9 +117,11 @@ final class RaceStore: ObservableObject {
         commit(changed)
     }
 
-    /// Records what the camera saw, subject to the repeat rule.
-    func record(_ sightings: [BibSighting], rule: RepeatRule) {
-        guard var changed = race else { return }
+    /// Records what the camera saw for a race, subject to the repeat rule.
+    /// Sightings for a race that is no longer the open one are dropped rather
+    /// than filed under another.
+    func record(_ sightings: [BibSighting], for raceID: UUID, rule: RepeatRule) {
+        guard var changed = race, changed.id == raceID else { return }
         var dirty = false
         for sighting in sightings {
             switch ledger.apply(sighting.report, to: &changed.crossings, rule: rule) {
@@ -173,7 +180,8 @@ final class RaceStore: ObservableObject {
 
     func deleteAllCrossings() {
         guard let raceID = race?.id else { return }
-        ledger.reset()
+        // The ledger keeps what it knows about bibs still in view, so they
+        // are not recorded a second time when they leave the picture.
         update { $0.crossings.removeAll() }
         thumbnails.removeAllObjects()
         let photos = RaceStore.photosDirectory(for: raceID, in: root)
@@ -221,7 +229,7 @@ final class RaceStore: ObservableObject {
     private func commit(_ changed: Race) {
         race = changed
         if let index = summaries.firstIndex(where: { $0.id == changed.id }) {
-            let summary = Summary(id: changed.id, name: changed.name, createdAt: changed.createdAt, count: changed.crossings.count)
+            let summary = RaceStore.summary(of: changed)
             if summaries[index] != summary { summaries[index] = summary }
         }
         needsSave = true
@@ -304,9 +312,14 @@ final class RaceStore: ObservableObject {
         for folder in folders {
             guard let id = UUID(uuidString: folder.lastPathComponent),
                   let race = load(file(for: id, in: root)) else { continue }
-            summaries.append(Summary(id: race.id, name: race.name, createdAt: race.createdAt, count: race.crossings.count))
+            summaries.append(summary(of: race))
         }
         return summaries.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private static func summary(of race: Race) -> Summary {
+        Summary(id: race.id, name: race.name, createdAt: race.createdAt, count: race.crossings.count,
+                code: race.eventCode(timeZone: .current))
     }
 }
 #endif

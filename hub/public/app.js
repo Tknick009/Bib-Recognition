@@ -1,24 +1,39 @@
-// The live results page. Polls the hub and redraws the table when something
-// has changed. All text from the iPads is inserted as text, never as HTML.
+// The live results page. Asks the hub every couple of seconds what has changed
+// and redraws the table when something has. Only changes are downloaded, never
+// the whole table again, so the page is cheap to leave open on a metered
+// connection. All text from the iPads is inserted as text, never as HTML.
 
 const keyStorage = 'bibtimer.hub.key';
-const pollEvery = 2000;
-const quietAfter = 90_000; // an iPad checks in every 30 s; this long without is worth noticing
+// How often to ask the hub for news: briskly while results are coming in,
+// less often once it has gone quiet, because every question costs data.
+const pollWhenBusy = 2000;
+const pollWhenQuiet = 5000;
+const busyFor = 30_000;
+const eventsEvery = 15_000; // how often to look for new events
+const quietAfter = 150_000; // an iPad checks in every 45 seconds; this long without is worth noticing
 
 const $ = (id) => document.getElementById(id);
 
 const state = {
   key: null,
   events: [],
+  eventsLoadedAt: 0,
   code: null,
+  // What is held for the current event: which hub data it came from, how
+  // far it is up to date, and the version tag of the last reply.
+  store: null,
+  revision: null,
   tag: null,
-  results: null,
+  info: null,
+  rows: new Map(),
   // Server clock at the last full reply, and when (on this computer) it arrived.
   serverNow: 0,
   receivedAt: 0,
   hiddenDevices: new Set(),
   seen: null,
   lastSuccess: 0,
+  // When a result last arrived, changed or was removed.
+  lastChange: 0,
   timer: null,
 };
 
@@ -48,8 +63,8 @@ async function errorMessage(response) {
 function resultsQuery({ format } = {}) {
   const query = new URLSearchParams();
   if (format) query.set('format', format);
-  if (state.hiddenDevices.size > 0 && state.results) {
-    const shown = state.results.stations.filter((station) => !state.hiddenDevices.has(station.device));
+  if (state.hiddenDevices.size > 0 && state.info) {
+    const shown = state.info.stations.filter((station) => !state.hiddenDevices.has(station.device));
     query.set('devices', shown.map((station) => station.device).join(','));
   }
   if ($('first-only').checked) query.set('dedupe', 'first');
@@ -63,8 +78,7 @@ function signOut(problem) {
   pollLoop += 1;
   clearTimeout(state.timer);
   state.key = null;
-  state.results = null;
-  state.tag = null;
+  forgetEvent();
   try {
     localStorage.removeItem(keyStorage);
   } catch {
@@ -102,6 +116,7 @@ async function signIn(key) {
   $('sign-in').hidden = true;
   $('sign-out').hidden = false;
   $('status').hidden = false;
+  state.eventsLoadedAt = 0;
   poll();
 }
 
@@ -122,18 +137,49 @@ async function poll() {
   }
   if (loop !== pollLoop) return;
   drawStatus();
-  if (state.key) state.timer = setTimeout(poll, pollEvery);
+  const delay = Date.now() - state.lastChange < busyFor ? pollWhenBusy : pollWhenQuiet;
+  if (state.key) state.timer = setTimeout(poll, delay);
 }
 
 async function refresh() {
-  const response = await request('/api/events');
+  if (!state.code || Date.now() - state.eventsLoadedAt > eventsEvery) {
+    await loadEvents();
+  }
+  if (!state.code) return;
+
+  const code = state.code;
+  const query = new URLSearchParams();
+  if (state.store !== null && state.revision !== null) {
+    query.set('store', state.store);
+    query.set('since', String(state.revision));
+  }
+  const response = await request(`/api/events/${encodeURIComponent(code)}/live?${query}`, {
+    headers: state.tag ? { 'If-None-Match': state.tag } : {},
+  });
+  // The event shown may have been switched while the request was under way.
+  if (code !== state.code) return;
+  if (response.status === 304) return;
+  if (response.status === 404) {
+    // Removed from the hub meanwhile: look at what is there now.
+    state.code = null;
+    state.eventsLoadedAt = 0;
+    return;
+  }
   if (!response.ok) throw new Error(await errorMessage(response));
   const body = await response.json();
-  state.events = body.events;
+  if (code !== state.code) return;
+  state.tag = response.headers.get('ETag');
+  takeIn(body);
+}
+
+async function loadEvents() {
+  const response = await request('/api/events');
+  if (!response.ok) throw new Error(await errorMessage(response));
+  state.events = (await response.json()).events;
+  state.eventsLoadedAt = Date.now();
 
   if (state.events.length === 0) {
-    state.code = null;
-    state.results = null;
+    forgetEvent();
     $('board').hidden = true;
     $('waiting').hidden = false;
     return;
@@ -144,27 +190,46 @@ async function refresh() {
   drawEventList();
   $('waiting').hidden = true;
   $('board').hidden = false;
+}
 
-  const results = await request(`/api/events/${encodeURIComponent(state.code)}/results.json`, {
-    headers: state.tag ? { 'If-None-Match': state.tag } : {},
-  });
-  if (results.status === 304) return;
-  if (!results.ok) throw new Error(await errorMessage(results));
-  state.tag = results.headers.get('ETag');
-  state.results = await results.json();
-  state.serverNow = state.results.now;
+/** Merges a reply from the hub into what is held, then redraws. */
+function takeIn(body) {
+  if (body.full || body.store !== state.store) {
+    state.rows = new Map();
+  }
+  for (const row of body.rows) state.rows.set(row.id, row);
+  for (const id of body.removed) state.rows.delete(id);
+  if (body.rows.length > 0 || body.removed.length > 0) state.lastChange = Date.now();
+  state.store = body.store;
+  state.revision = body.revision;
+  state.info = {
+    startTime: body.startTime,
+    startFrom: body.startFrom,
+    timeZone: body.timeZone,
+    stations: body.stations,
+  };
+  state.serverNow = body.now;
   state.receivedAt = Date.now();
   draw();
 }
 
-function selectEvent(code) {
-  state.code = code;
+function forgetEvent() {
+  state.code = null;
+  state.store = null;
+  state.revision = null;
   state.tag = null;
-  state.results = null;
+  state.info = null;
+  state.rows = new Map();
   state.seen = null;
   state.hiddenDevices.clear();
   delete $('stations').dataset.shape;
   $('note').hidden = true;
+}
+
+function selectEvent(code) {
+  forgetEvent();
+  state.code = code;
+  state.lastChange = Date.now();
 }
 
 // ---- Drawing ----
@@ -206,10 +271,10 @@ function element(tag, className, text) {
 function drawStatus() {
   const status = $('status');
   const silentFor = Date.now() - state.lastSuccess;
-  if (state.lastSuccess === 0 || silentFor > 15_000) {
+  if (state.lastSuccess === 0 || silentFor > 30_000) {
     status.className = 'status down';
     status.textContent = 'Not connected';
-  } else if (silentFor > 6000) {
+  } else if (silentFor > 13_000) {
     status.className = 'status stale';
     status.textContent = 'Reconnecting';
   } else {
@@ -233,14 +298,14 @@ function drawEventList() {
 }
 
 function drawStations() {
-  const results = state.results;
-  if (!results) return;
+  const info = state.info;
+  if (!info) return;
   const container = $('stations');
   // The chips are only rebuilt when the stations themselves change, so a
   // checkbox is never replaced while someone is clicking it.
-  const shape = results.stations.map((station) => `${station.device}\u0000${station.station}`).join('\u0001');
+  const shape = info.stations.map((station) => `${station.device}\u0000${station.station}`).join('\u0001');
   if (container.dataset.shape !== shape) {
-    container.replaceChildren(...results.stations.map((station) => {
+    container.replaceChildren(...info.stations.map((station) => {
       const chip = element('label', 'station');
       chip.dataset.device = station.device;
       const box = element('input');
@@ -259,7 +324,7 @@ function drawStations() {
 
   const serverNow = state.serverNow + (Date.now() - state.receivedAt);
   for (const chip of container.children) {
-    const station = results.stations.find((item) => item.device === chip.dataset.device);
+    const station = info.stations.find((item) => item.device === chip.dataset.device);
     if (!station) continue;
     const silent = serverNow - station.updatedAt;
     chip.classList.toggle('quiet-for-long', silent > quietAfter);
@@ -268,8 +333,11 @@ function drawStations() {
   }
 }
 
+/** The rows to show, in finishing order. */
 function visibleRows() {
-  let rows = state.results.rows.filter((row) => !state.hiddenDevices.has(row.device));
+  let rows = [...state.rows.values()]
+    .filter((row) => !state.hiddenDevices.has(row.device))
+    .sort((a, b) => a.time - b.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   if ($('first-only').checked) {
     const bibs = new Set();
     rows = rows.filter((row) => {
@@ -283,19 +351,19 @@ function visibleRows() {
 }
 
 function draw() {
-  const results = state.results;
-  if (!results) return;
+  const info = state.info;
+  if (!info) return;
   drawStations();
 
   const rows = visibleRows();
   $('total').textContent = String(rows.length);
-  $('start').textContent = results.startTime == null
+  $('start').textContent = info.startTime == null
     ? 'not set'
-    : `${timeOfDay(results.startTime, results.timeZone).slice(0, -2)}${results.startFrom ? ` (from ${results.startFrom})` : ''}`;
+    : `${timeOfDay(info.startTime, info.timeZone).slice(0, -2)}${info.startFrom ? ` (from ${info.startFrom})` : ''}`;
 
   // Rows that were not there at the previous draw are highlighted briefly.
   const previouslySeen = state.seen;
-  state.seen = new Set(results.rows.map((row) => row.id));
+  state.seen = new Set(state.rows.keys());
 
   const numbered = rows.map((row, index) => ({ row, position: index + 1 }));
   if ($('newest-first').checked) numbered.reverse();
@@ -305,8 +373,8 @@ function draw() {
     line.append(
       element('td', 'num', String(position)),
       element('td', row.bib === '' ? 'bib missing' : 'bib', row.bib === '' ? '?' : row.bib),
-      element('td', null, timeOfDay(row.time, results.timeZone)),
-      element('td', null, results.startTime == null ? '' : elapsed(results.startTime, row.time)),
+      element('td', null, timeOfDay(row.time, info.timeZone)),
+      element('td', null, info.startTime == null ? '' : elapsed(info.startTime, row.time)),
       element('td', null, row.station),
     );
     const notes = element('td', 'notes');
@@ -367,7 +435,8 @@ async function removeEvent() {
     showNote(await errorMessage(response));
     return;
   }
-  state.code = null;
+  forgetEvent();
+  state.eventsLoadedAt = 0;
   poll();
 }
 

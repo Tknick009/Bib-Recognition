@@ -4,7 +4,8 @@
 //   GET    /                                         the live results page
 //   GET    /api/ping                                 checks an address and key
 //   GET    /api/events                               the events the hub holds
-//   GET    /api/events/:code/results.json            merged results of an event
+//   GET    /api/events/:code/live?since=N            what changed since revision N
+//   GET    /api/events/:code/results.json            all results of an event
 //   GET    /api/events/:code/results.csv             the same as a CSV file
 //   PUT    /api/events/:code/sources/:device         an iPad sends its results
 //   DELETE /api/events/:code                         removes an event from the hub
@@ -12,14 +13,20 @@
 // Everything under /api needs the access key, sent as "Authorization: Bearer
 // <key>" or as "?key=<key>" in the address. A separate view key, if one is
 // set, can read but not change anything.
+//
+// Replies are kept small, because the scoring computer may be on a metered
+// connection: unchanged data is answered with "304 Not Modified", the live
+// page is sent only what changed, and larger replies are compressed.
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { isDeviceID, isEventCode } from './store.js';
 import { isTimeZone, toCSV } from './format.js';
 
 const maxBodyBytes = 8 * 1024 * 1024;
+const compressFromBytes = 1024;
 
 const staticFiles = {
   '/': ['index.html', 'text/html; charset=utf-8'],
@@ -41,17 +48,46 @@ function sameSecret(given, expected) {
   return timingSafeEqual(a, b);
 }
 
-function send(res, status, headers, body) {
-  res.writeHead(status, { ...securityHeaders, ...headers });
-  res.end(body);
+function shortHash(text) {
+  return createHash('sha256').update(text).digest('hex').slice(0, 12);
 }
 
-function sendJSON(res, status, value, headers = {}) {
-  send(res, status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers }, JSON.stringify(value));
+function acceptsGzip(req) {
+  return /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''));
 }
 
-function sendError(res, status, message) {
-  sendJSON(res, status, { error: message });
+/** Sends a reply, compressed when that is worth it and the reader can take it. */
+function send(req, res, status, headers, body) {
+  let payload = body;
+  const extra = {};
+  if (payload !== undefined && payload !== null) {
+    if (typeof payload === 'string') payload = Buffer.from(payload);
+    if (payload.length >= compressFromBytes) {
+      extra.Vary = 'Accept-Encoding';
+      if (acceptsGzip(req)) {
+        payload = gzipSync(payload);
+        extra['Content-Encoding'] = 'gzip';
+      }
+    }
+    extra['Content-Length'] = payload.length;
+  }
+  res.writeHead(status, { ...securityHeaders, ...headers, ...extra });
+  res.end(req.method === 'HEAD' ? undefined : payload);
+}
+
+function sendJSON(req, res, status, value, headers = {}) {
+  send(req, res, status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers }, JSON.stringify(value));
+}
+
+function sendError(req, res, status, message) {
+  sendJSON(req, res, status, { error: message });
+}
+
+/** Answers "nothing has changed" if the reader already holds this version. */
+function notModified(req, res, tag) {
+  if (req.headers['if-none-match'] !== tag) return false;
+  send(req, res, 304, { ETag: tag, 'Cache-Control': 'no-store' });
+  return true;
 }
 
 function readBody(req) {
@@ -82,7 +118,8 @@ function readBody(req) {
 export function createHandler({ store, key, viewKey = '', publicDir, log = () => {} }) {
   const files = new Map();
   for (const [route, [name, type]] of Object.entries(staticFiles)) {
-    files.set(route, { body: fs.readFileSync(path.join(publicDir, name)), type });
+    const body = fs.readFileSync(path.join(publicDir, name));
+    files.set(route, { body, type, tag: `"${shortHash(body)}"` });
   }
 
   function accessLevel(req, url) {
@@ -111,14 +148,21 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     };
   }
 
+  /** The address without the key, so two readers with different keys share a version tag. */
+  function queryWithoutKey(url) {
+    const query = new URLSearchParams(url.searchParams);
+    query.delete('key');
+    return query.toString();
+  }
+
   async function handleAPI(req, res, url) {
     if (!key) {
-      sendError(res, 503, 'This hub has no access key yet. Set the HUB_KEY variable on the server and restart it.');
+      sendError(req, res, 503, 'This hub has no access key yet. Set the HUB_KEY variable on the server and restart it.');
       return;
     }
     const level = accessLevel(req, url);
     if (!level) {
-      sendError(res, 401, 'The access key is missing or wrong.');
+      sendError(req, res, 401, 'The access key is missing or wrong.');
       return;
     }
 
@@ -126,70 +170,85 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     try {
       segments = url.pathname.split('/').filter((part) => part !== '').map(decodeURIComponent);
     } catch {
-      sendError(res, 400, 'The address is not valid.');
+      sendError(req, res, 400, 'The address is not valid.');
       return;
     }
 
     if (segments.length === 2 && segments[1] === 'ping' && req.method === 'GET') {
-      sendJSON(res, 200, { ok: true, access: level, store: store.storeID, persistent: store.persistent });
+      sendJSON(req, res, 200, { ok: true, access: level, store: store.storeID, persistent: store.persistent });
       return;
     }
 
     if (segments.length === 2 && segments[1] === 'events' && req.method === 'GET') {
-      sendJSON(res, 200, { store: store.storeID, events: store.listEvents() });
+      sendJSON(req, res, 200, { store: store.storeID, now: Date.now(), events: store.listEvents() });
       return;
     }
 
     if (segments[1] !== 'events' || segments.length < 3) {
-      sendError(res, 404, 'There is nothing at this address.');
+      sendError(req, res, 404, 'There is nothing at this address.');
       return;
     }
     const code = segments[2];
     if (!isEventCode(code)) {
-      sendError(res, 400, 'An event code is 3 to 50 lower-case letters, digits and hyphens.');
+      sendError(req, res, 400, 'An event code is 3 to 50 lower-case letters, digits and hyphens.');
       return;
     }
 
     if (segments.length === 3 && req.method === 'DELETE') {
-      if (level !== 'full') return sendError(res, 403, 'This key can only view results.');
-      if (!store.deleteEvent(code)) return sendError(res, 404, 'The hub has no event with this code.');
-      sendJSON(res, 200, { ok: true });
+      if (level !== 'full') return sendError(req, res, 403, 'This key can only view results.');
+      if (!store.deleteEvent(code)) return sendError(req, res, 404, 'The hub has no event with this code.');
+      sendJSON(req, res, 200, { ok: true });
       return;
     }
 
     if (segments.length === 5 && segments[3] === 'sources' && req.method === 'PUT') {
-      if (level !== 'full') return sendError(res, 403, 'This key can only view results.');
+      if (level !== 'full') return sendError(req, res, 403, 'This key can only view results.');
       const device = segments[4];
-      if (!isDeviceID(device)) return sendError(res, 400, 'The device identifier is not valid.');
+      if (!isDeviceID(device)) return sendError(req, res, 400, 'The device identifier is not valid.');
       let push;
       try {
         push = JSON.parse((await readBody(req)).toString('utf8'));
       } catch (error) {
-        return sendError(res, error.status ?? 400, error.status ? error.message : 'The upload is not valid JSON.');
+        return sendError(req, res, error.status ?? 400, error.status ? error.message : 'The upload is not valid JSON.');
       }
       if (push === null || typeof push !== 'object' || Array.isArray(push)) {
-        return sendError(res, 400, 'The upload must be a JSON object.');
+        return sendError(req, res, 400, 'The upload must be a JSON object.');
       }
       const result = store.applyPush(code, device, push);
-      if (result.error) return sendError(res, 409, result.error);
-      sendJSON(res, 200, result);
+      if (result.error) return sendError(req, res, 409, result.error);
+      sendJSON(req, res, 200, result);
       return;
     }
 
-    const isJSON = segments.length === 4 && segments[3] === 'results.json';
-    const isCSV = segments.length === 4 && segments[3] === 'results.csv';
-    if ((isJSON || isCSV) && req.method === 'GET') {
-      // Lets a page that polls skip the download when nothing has changed.
-      const tag = `"${store.storeID}:${store.revision(code)}:${createHash('sha256').update(url.search).digest('hex').slice(0, 12)}"`;
-      if (store.hasEvent(code) && req.headers['if-none-match'] === tag) {
-        send(res, 304, { ETag: tag, 'Cache-Control': 'no-store' });
-        return;
-      }
+    if (req.method !== 'GET' || segments.length !== 4) {
+      sendError(req, res, 404, 'There is nothing at this address.');
+      return;
+    }
+    const noSuchEvent = 'The hub has no event with this code yet. It appears when an iPad first sends results.';
+
+    if (segments[3] === 'live') {
+      if (!store.hasEvent(code)) return sendError(req, res, 404, noSuchEvent);
+      // A reader that last saw another store (the hub has lost its data
+      // since) cannot be sent a difference; it gets everything.
+      const sameStore = url.searchParams.get('store') === store.storeID;
+      const since = sameStore && /^\d{1,15}$/.test(url.searchParams.get('since') ?? '') ? Number(url.searchParams.get('since')) : null;
+      // Changes with the results and with each check-in from an iPad.
+      const tag = `"${store.storeID}:${store.revision(code)}:${store.lastHeard(code)}:${since ?? 'all'}"`;
+      if (notModified(req, res, tag)) return;
+      sendJSON(req, res, 200, { store: store.storeID, now: Date.now(), ...store.changes(code, since) }, { ETag: tag });
+      return;
+    }
+
+    const isJSON = segments[3] === 'results.json';
+    const isCSV = segments[3] === 'results.csv';
+    if (isJSON || isCSV) {
+      if (!store.hasEvent(code)) return sendError(req, res, 404, noSuchEvent);
+      const tag = `"${store.storeID}:${store.revision(code)}:${shortHash(queryWithoutKey(url))}"`;
+      if (notModified(req, res, tag)) return;
       const results = store.results(code, resultsOptions(url));
-      if (!results) return sendError(res, 404, 'The hub has no event with this code yet. It appears when an iPad first sends results.');
 
       if (isJSON) {
-        sendJSON(res, 200, { store: store.storeID, now: Date.now(), ...results }, { ETag: tag });
+        sendJSON(req, res, 200, { store: store.storeID, now: Date.now(), ...results }, { ETag: tag });
         return;
       }
       const requestedZone = url.searchParams.get('tz');
@@ -199,7 +258,7 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
         timeZone,
         startTime: results.startTime,
       });
-      send(res, 200, {
+      send(req, res, 200, {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': `attachment; filename="${code}.csv"`,
         'Cache-Control': 'no-store',
@@ -208,7 +267,7 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
       return;
     }
 
-    sendError(res, 404, 'There is nothing at this address.');
+    sendError(req, res, 404, 'There is nothing at this address.');
   }
 
   return async function handle(req, res) {
@@ -216,13 +275,13 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     try {
       url = new URL(req.url, 'http://hub.invalid');
     } catch {
-      sendError(res, 400, 'The address is not valid.');
+      sendError(req, res, 400, 'The address is not valid.');
       return;
     }
 
     try {
       if (url.pathname === '/health') {
-        sendJSON(res, 200, { ok: true });
+        sendJSON(req, res, 200, { ok: true });
         return;
       }
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
@@ -231,18 +290,22 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
       }
       const file = files.get(url.pathname);
       if (file && (req.method === 'GET' || req.method === 'HEAD')) {
-        send(res, 200, {
+        const headers = {
           'Content-Type': file.type,
+          // The browser keeps its copy and only asks whether it is still current.
           'Cache-Control': 'no-cache',
+          ETag: file.tag,
           // The page loads nothing from anywhere else and runs no inline script.
           'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-        }, req.method === 'HEAD' ? undefined : file.body);
+        };
+        if (req.headers['if-none-match'] === file.tag) send(req, res, 304, headers);
+        else send(req, res, 200, headers, file.body);
         return;
       }
-      sendError(res, 404, 'There is nothing at this address.');
+      sendError(req, res, 404, 'There is nothing at this address.');
     } catch (error) {
       log(`request failed: ${error.stack ?? error}`);
-      if (!res.headersSent) sendError(res, 500, 'The hub ran into a problem handling this request.');
+      if (!res.headersSent) sendError(req, res, 500, 'The hub ran into a problem handling this request.');
       else res.end();
     }
   };

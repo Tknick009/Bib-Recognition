@@ -76,9 +76,10 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     func stop() {
         sessionQueue.async {
             self.wantsToRun = false
-            if self.session.isRunning {
-                self.session.stopRunning()
-            }
+            // Always, not only when running: an interrupted session is not
+            // "running", but it would start again by itself once the
+            // interruption is over.
+            self.session.stopRunning()
             self.report(.idle)
         }
     }
@@ -142,7 +143,21 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         if !session.isRunning {
             session.startRunning()
         }
-        report(session.isRunning ? .running : .failed("The camera could not start."))
+        reportSessionState(ifStopped: "The camera could not start.")
+    }
+
+    /// Tells the app what the session is doing.
+    private func reportSessionState(ifStopped problem: String) {
+        guard wantsToRun else { return }
+        if session.isRunning {
+            report(.running)
+        } else if session.isInterrupted {
+            // Something else has the camera for now (another app, the app
+            // not being in front). It starts by itself afterwards.
+            report(.interrupted)
+        } else {
+            report(.failed(problem))
+        }
     }
 
     private func configure(_ settings: CameraSettings) {
@@ -158,24 +173,32 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
 
         do {
             try device.lockForConfiguration()
-            if device.isFocusModeSupported(.continuousAutoFocus) {
+            // Only what differs is set: this runs for every step of the zoom
+            // slider, and setting a value again can make the camera hunt.
+            if device.isFocusModeSupported(.continuousAutoFocus), device.focusMode != .continuousAutoFocus {
                 device.focusMode = .continuousAutoFocus
             }
-            if device.isExposureModeSupported(.continuousAutoExposure) {
+            if device.isExposureModeSupported(.continuousAutoExposure), device.exposureMode != .continuousAutoExposure {
                 device.exposureMode = .continuousAutoExposure
             }
             // A short exposure keeps a moving bib sharp; the camera makes up
             // for it with a higher sensitivity.
+            let format = device.activeFormat
+            var longestExposure = format.maxExposureDuration
             if settings.shutterLimit > 0 {
                 let limit = CMTime(value: 1, timescale: CMTimeScale(settings.shutterLimit))
-                let format = device.activeFormat
-                device.activeMaxExposureDuration = CMTimeMaximum(format.minExposureDuration, CMTimeMinimum(limit, format.maxExposureDuration))
-            } else {
-                device.activeMaxExposureDuration = .invalid
+                longestExposure = CMTimeMaximum(format.minExposureDuration, CMTimeMinimum(limit, format.maxExposureDuration))
+            }
+            if CMTimeCompare(device.activeMaxExposureDuration, longestExposure) != 0 {
+                // "Invalid" is how the camera is told to choose for itself.
+                device.activeMaxExposureDuration = settings.shutterLimit > 0 ? longestExposure : .invalid
             }
             let lowest = device.minAvailableVideoZoomFactor
             let highest = min(device.maxAvailableVideoZoomFactor, CameraController.maxZoom)
-            device.videoZoomFactor = min(max(CGFloat(settings.zoom), lowest), max(lowest, highest))
+            let zoom = min(max(CGFloat(settings.zoom), lowest), max(lowest, highest))
+            if device.videoZoomFactor != zoom {
+                device.videoZoomFactor = zoom
+            }
             device.unlockForConfiguration()
         } catch {
             // The camera keeps running with its previous configuration.
@@ -201,12 +224,14 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     private func applyRotation() {
         guard let coordinator = rotationCoordinator else { return }
         let angle = coordinator.videoRotationAngleForHorizonLevelPreview
-        if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(angle) {
+        if let connection = output.connection(with: .video),
+           connection.videoRotationAngle != angle, connection.isVideoRotationAngleSupported(angle) {
             connection.videoRotationAngle = angle
         }
         let layer = previewLayer
         DispatchQueue.main.async {
-            if let connection = layer.connection, connection.isVideoRotationAngleSupported(angle) {
+            if let connection = layer.connection,
+               connection.videoRotationAngle != angle, connection.isVideoRotationAngleSupported(angle) {
                 connection.videoRotationAngle = angle
             }
         }
@@ -217,12 +242,17 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
     private func observeSession() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: session, queue: nil) { [weak self] _ in
-            self?.report(.interrupted)
-        })
-        observers.append(center.addObserver(forName: AVCaptureSession.interruptionEndedNotification, object: session, queue: nil) { [weak self] _ in
             guard let self else { return }
             self.sessionQueue.async {
-                if self.wantsToRun { self.report(self.session.isRunning ? .running : .interrupted) }
+                if self.wantsToRun { self.report(.interrupted) }
+            }
+        })
+        // After an interruption the session starts again by itself, a moment
+        // after it says the interruption is over. This is when it is back.
+        observers.append(center.addObserver(forName: AVCaptureSession.didStartRunningNotification, object: session, queue: nil) { [weak self] _ in
+            guard let self else { return }
+            self.sessionQueue.async {
+                if self.wantsToRun { self.report(.running) }
             }
         })
         observers.append(center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: nil) { [weak self] _ in
@@ -234,7 +264,7 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
                 if !self.session.isRunning {
                     self.session.startRunning()
                 }
-                self.report(self.session.isRunning ? .running : .failed("The camera stopped unexpectedly."))
+                self.reportSessionState(ifStopped: "The camera stopped unexpectedly.")
             }
         })
     }

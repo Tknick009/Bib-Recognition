@@ -127,8 +127,11 @@ struct RaceSetupView: View {
             startProblem = "Enter the time as hours:minutes:seconds, for example 9:30:00 or 14:05:30.5."
             return
         }
-        let midnight = Calendar.current.startOfDay(for: startDay)
-        setStart(midnight.addingTimeInterval(seconds))
+        guard let moment = TimeFormat.moment(on: startDay, secondsIntoDay: seconds, calendar: .current) else {
+            startProblem = "That time does not exist on that day."
+            return
+        }
+        setStart(moment)
     }
 
     // MARK: Start list
@@ -228,11 +231,12 @@ struct RaceSetupView: View {
                     Text(codeProblem).foregroundStyle(.red)
                 }
                 Text(hubStatusText).foregroundStyle(.secondary)
+                LabeledContent("Data used by uploads", value: "about " + HubSync.formatData(hub.dataUsed))
             }
         } header: {
             Text("Live results")
         } footer: {
-            Text("Every iPad at an event must use the same event code: that is how their results are combined on the results server. iPads on which the race was created with the same name on the same day already agree.")
+            Text("Every iPad at an event must use the same event code: that is how their results are combined on the results server. iPads on which the race was created with the same name on the same day already agree. The data figure is an estimate of what this iPad's uploads have used since the app was opened; only numbers and times are sent, never video or photos.")
         }
     }
 

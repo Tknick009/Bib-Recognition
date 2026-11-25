@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { after, before, test } from 'node:test';
+import { gunzipSync } from 'node:zlib';
 import { startHub } from '../server.js';
 
 const key = 'correct-horse-battery';
@@ -114,6 +116,103 @@ test('unchanged results are not sent again', async () => {
   const changed = await call('/api/events/polling/results.json', { headers: { 'If-None-Match': tag } });
   assert.equal(changed.status, 200);
   assert.equal((await changed.json()).rows.length, 2);
+});
+
+test('the live page is sent only what has changed', async () => {
+  const address = `/api/events/live-feed/sources/${device}`;
+  await call(address, { method: 'PUT', body: upload([crossing('a', '1', 10), crossing('b', '2', 20)]) });
+
+  // First look: everything.
+  const first = await call('/api/events/live-feed/live', { as: viewKey });
+  assert.equal(first.status, 200);
+  const everything = await first.json();
+  assert.equal(everything.full, true);
+  assert.equal(everything.revision, 1);
+  assert.deepEqual(everything.rows.map((row) => row.id), ['a', 'b']);
+  assert.equal(everything.stations[0].station, 'Finish');
+  assert.equal(everything.startTime, start);
+
+  // Asking again with what is already held costs next to nothing.
+  const held = `?store=${everything.store}&since=${everything.revision}`;
+  const caughtUp = await call(`/api/events/live-feed/live${held}`);
+  const nothingNew = await caughtUp.json();
+  assert.equal(nothingNew.full, false);
+  assert.deepEqual(nothingNew.rows, []);
+  assert.deepEqual(nothingNew.removed, []);
+  const tag = caughtUp.headers.get('etag');
+  const unchanged = await call(`/api/events/live-feed/live${held}`, { headers: { 'If-None-Match': tag } });
+  assert.equal(unchanged.status, 304);
+  assert.equal((await unchanged.arrayBuffer()).byteLength, 0);
+
+  // One result arrives and one is deleted: only that travels.
+  await call(address, { method: 'PUT', body: upload([crossing('c', '3', 30)], { full: false, deleted: ['a'] }) });
+  const changed = await call(`/api/events/live-feed/live${held}`, { headers: { 'If-None-Match': tag } });
+  assert.equal(changed.status, 200);
+  const difference = await changed.json();
+  assert.equal(difference.full, false);
+  assert.equal(difference.revision, 2);
+  assert.deepEqual(difference.rows.map((row) => row.id), ['c']);
+  assert.deepEqual(difference.removed, ['a']);
+
+  // A reader that last saw other data (the hub lost its own since) gets everything.
+  const stranger = await (await call('/api/events/live-feed/live?store=some-other-store&since=1')).json();
+  assert.equal(stranger.full, true);
+  assert.deepEqual(stranger.rows.map((row) => row.id), ['b', 'c']);
+
+  assert.equal((await call('/api/events/never-heard-of-it/live')).status, 404);
+});
+
+test('an iPad checking in changes the version of the live feed but not of the results', async () => {
+  const address = `/api/events/check-in/sources/${device}`;
+  await call(address, { method: 'PUT', body: upload([crossing('a', '1', 10)]) });
+  const results = await call('/api/events/check-in/results.json');
+  const resultsTag = results.headers.get('etag');
+  await results.arrayBuffer();
+  const live = await call('/api/events/check-in/live');
+  const liveBody = await live.json();
+  const held = `?store=${liveBody.store}&since=${liveBody.revision}`;
+  const liveTag = (await call(`/api/events/check-in/live${held}`)).headers.get('etag');
+
+  // A moment later the iPad checks in with nothing new.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await call(address, { method: 'PUT', body: upload([], { full: false }) });
+
+  assert.equal((await call('/api/events/check-in/results.json', { headers: { 'If-None-Match': resultsTag } })).status, 304);
+  const afterCheckIn = await call(`/api/events/check-in/live${held}`, { headers: { 'If-None-Match': liveTag } });
+  assert.equal(afterCheckIn.status, 200);
+  const body = await afterCheckIn.json();
+  assert.deepEqual(body.rows, []);
+  assert.ok(body.stations[0].updatedAt >= liveBody.stations[0].updatedAt);
+});
+
+function rawGet(path, headers) {
+  return new Promise((resolve, reject) => {
+    http.get(`${base}${path}`, { headers: { Authorization: `Bearer ${key}`, ...headers } }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({ headers: response.headers, body: Buffer.concat(chunks) }));
+    }).on('error', reject);
+  });
+}
+
+test('large replies are compressed for readers that can take it', async () => {
+  const many = Array.from({ length: 300 }, (_, index) => crossing(`c${index}`, String(100 + index), index));
+  await call(`/api/events/big-field/sources/${device}`, { method: 'PUT', body: upload(many) });
+
+  const plain = await rawGet('/api/events/big-field/results.json', {});
+  assert.equal(plain.headers['content-encoding'], undefined);
+  assert.equal(JSON.parse(plain.body).rows.length, 300);
+
+  const packed = await rawGet('/api/events/big-field/results.json', { 'Accept-Encoding': 'gzip, deflate, br' });
+  assert.equal(packed.headers['content-encoding'], 'gzip');
+  assert.equal(packed.headers.vary, 'Accept-Encoding');
+  assert.equal(Number(packed.headers['content-length']), packed.body.length);
+  assert.equal(JSON.parse(gunzipSync(packed.body)).rows.length, 300);
+  assert.ok(packed.body.length < plain.body.length / 3, `${packed.body.length} of ${plain.body.length} bytes`);
+
+  // Small replies are left alone.
+  const small = await rawGet('/api/ping', { 'Accept-Encoding': 'gzip' });
+  assert.equal(small.headers['content-encoding'], undefined);
 });
 
 test('the view key cannot change anything', async () => {

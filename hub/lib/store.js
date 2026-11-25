@@ -7,6 +7,12 @@
 // The iPads keep the master copy. If the hub ever loses its data it gets a new
 // store identity, each iPad notices on its next upload and sends everything
 // again. So nothing here has to be treated as irreplaceable.
+//
+// Every change to an event's results gives the event a new revision number,
+// and each crossing remembers the revision in which it last changed. A reader
+// that already has revision N can therefore ask for just what happened since,
+// instead of downloading everything again. An upload that changes nothing (an
+// iPad checking in) does not create a revision.
 
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -16,6 +22,8 @@ export const limits = {
   events: 500,
   sourcesPerEvent: 60,
   crossingsPerSource: 50_000,
+  // How many removals an event remembers, so readers can be told about them.
+  removalsPerEvent: 20_000,
 };
 
 const eventCodePattern = /^[a-z0-9](?:[a-z0-9-]{1,48})[a-z0-9]$/;
@@ -23,6 +31,7 @@ const devicePattern = /^[A-Za-z0-9-]{8,64}$/;
 const idPattern = /^[A-Za-z0-9-]{1,64}$/;
 const timings = new Set(['line', 'estimated', 'firstSeen', 'lastSeen', 'manual']);
 const latestTime = 4_102_444_800; // 2100-01-01, in seconds
+const crossingFields = ['bib', 'time', 'timing', 'source', 'clock', 'clockError', 'confidence', 'note'];
 
 export function isEventCode(code) {
   return typeof code === 'string' && eventCodePattern.test(code);
@@ -42,6 +51,10 @@ function numberOrNull(value, min, max) {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : null;
 }
 
+function wholeNumber(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 /** A crossing as sent by an iPad, reduced to the fields the hub keeps; null if unusable. */
 export function cleanCrossing(raw) {
   if (raw === null || typeof raw !== 'object') return null;
@@ -59,6 +72,14 @@ export function cleanCrossing(raw) {
     confidence: numberOrNull(raw.confidence, 0, 1),
     note: text(raw.note, 200),
   };
+}
+
+function sameCrossing(a, b) {
+  return crossingFields.every((field) => a[field] === b[field]);
+}
+
+function byTimeThenID(a, b) {
+  return a.time - b.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 export class Store {
@@ -102,8 +123,14 @@ export class Store {
     return this.#events.has(code);
   }
 
+  /** Counts changes to the event's results. */
   revision(code) {
     return this.#events.get(code)?.revision ?? 0;
+  }
+
+  /** When any iPad at the event last got in touch, in milliseconds. */
+  lastHeard(code) {
+    return this.#events.get(code)?.updatedAt ?? 0;
   }
 
   /**
@@ -129,7 +156,7 @@ export class Store {
         rows.push({ ...crossing, station: source.station, device: source.device });
       }
     }
-    rows.sort((a, b) => a.time - b.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    rows.sort(byTimeThenID);
 
     if (firstPerBib) {
       const seen = new Set();
@@ -143,6 +170,36 @@ export class Store {
     return { ...this.#summary(event), rows };
   }
 
+  /**
+   * What has happened to an event's results since a revision the reader
+   * already has: the crossings that are new or different, and the identifiers
+   * of those that are gone. Without a usable `since`, everything is returned
+   * and `full` is true.
+   */
+  changes(code, since = null) {
+    const event = this.#events.get(code);
+    if (!event) return null;
+    const full = !(Number.isInteger(since) && since >= event.removedFloor && since <= event.revision);
+
+    const rows = [];
+    for (const source of event.sources.values()) {
+      for (const crossing of source.crossings.values()) {
+        if (full || crossing.rev > since) {
+          rows.push({ ...crossing, station: source.station, device: source.device });
+        }
+      }
+    }
+    rows.sort(byTimeThenID);
+
+    const removed = [];
+    if (!full) {
+      for (const [id, revision] of event.removed) {
+        if (revision > since) removed.push(id);
+      }
+    }
+    return { ...this.#summary(event), full, rows, removed };
+  }
+
   // ---- Writing ----
 
   /**
@@ -151,49 +208,95 @@ export class Store {
    */
   applyPush(code, device, push) {
     const now = this.#now();
+    // Nothing is stored until the whole upload has been checked, so an upload
+    // that is refused leaves no trace.
     let event = this.#events.get(code);
     if (!event) {
       if (this.#events.size >= limits.events) return { error: 'The hub is holding too many events. Delete old ones.' };
-      event = { code, createdAt: now, updatedAt: now, revision: 0, sources: new Map() };
-      this.#events.set(code, event);
+      event = { code, createdAt: now, updatedAt: now, revision: 0, removed: new Map(), removedFloor: 0, sources: new Map() };
     }
 
     let source = event.sources.get(device);
+    const isNewSource = !source;
     if (!source) {
       if (event.sources.size >= limits.sourcesPerEvent) return { error: 'Too many iPads have sent results for this event.' };
       source = {
         device, station: '', raceName: '', timeZone: 'UTC',
         startTime: null, startChangedAt: 0, updatedAt: now, crossings: new Map(),
       };
-      event.sources.set(device, source);
     }
 
-    const crossings = Array.isArray(push.crossings) ? push.crossings : [];
-    const deleted = Array.isArray(push.deleted) ? push.deleted : [];
+    // The revision this upload gets, if it turns out to change anything.
+    const revision = event.revision + 1;
+    let changed = isNewSource;
+
     const next = push.full === true ? new Map() : new Map(source.crossings);
-    for (const raw of crossings) {
+    for (const raw of Array.isArray(push.crossings) ? push.crossings : []) {
       const crossing = cleanCrossing(raw);
-      if (crossing) next.set(crossing.id, crossing);
+      if (!crossing) continue;
+      const previous = source.crossings.get(crossing.id);
+      if (previous && sameCrossing(previous, crossing)) {
+        next.set(crossing.id, previous);
+      } else {
+        next.set(crossing.id, { ...crossing, rev: revision });
+        changed = true;
+      }
     }
-    for (const id of deleted) {
+    for (const id of Array.isArray(push.deleted) ? push.deleted : []) {
       if (typeof id === 'string') next.delete(id);
     }
     if (next.size > limits.crossingsPerSource) return { error: 'Too many results from one iPad.' };
-    source.crossings = next;
 
-    source.station = text(push.station, 40) || 'Station';
-    source.raceName = text(push.raceName, 80);
-    if (typeof push.timeZone === 'string' && push.timeZone.length <= 64) source.timeZone = push.timeZone;
+    const gone = [...source.crossings.keys()].filter((id) => !next.has(id));
+    if (gone.length > 0) changed = true;
+
+    const station = text(push.station, 40) || 'Station';
+    if (station !== source.station) {
+      // Every row from this iPad is shown with its station name.
+      for (const [id, crossing] of next) next.set(id, { ...crossing, rev: revision });
+      changed = true;
+    }
+    const raceName = text(push.raceName, 80);
+    const timeZone = typeof push.timeZone === 'string' && push.timeZone.length <= 64 ? push.timeZone : source.timeZone;
     const startTime = numberOrNull(push.startTime, 0, latestTime);
+    if (raceName !== source.raceName || timeZone !== source.timeZone || startTime !== source.startTime) changed = true;
+
+    // Nothing can fail from here on, so the upload is taken in as a whole.
+    this.#events.set(code, event);
+    event.sources.set(device, source);
+    source.crossings = next;
+    source.station = station;
+    source.raceName = raceName;
+    source.timeZone = timeZone;
     if (startTime !== source.startTime) {
       source.startTime = startTime;
       source.startChangedAt = now;
     }
     source.updatedAt = now;
     event.updatedAt = now;
-    event.revision += 1;
+
+    if (changed) {
+      event.revision = revision;
+      for (const id of gone) event.removed.set(id, revision);
+      for (const id of next.keys()) event.removed.delete(id);
+      this.#trimRemovals(event);
+    }
+    // Saved even when nothing changed, so "last heard from" survives a restart.
     this.#scheduleSave(code);
     return { store: this.#storeID, count: source.crossings.size };
+  }
+
+  /** Forgets the oldest removals once there are too many to remember. */
+  #trimRemovals(event) {
+    if (event.removed.size <= limits.removalsPerEvent) return;
+    const oldestFirst = [...event.removed].sort(([, a], [, b]) => a - b);
+    const drop = oldestFirst.slice(0, oldestFirst.length - limits.removalsPerEvent / 2);
+    for (const [id, revision] of drop) {
+      event.removed.delete(id);
+      // Readers older than this can no longer be told what was removed and
+      // are sent everything instead.
+      event.removedFloor = Math.max(event.removedFloor, revision);
+    }
   }
 
   deleteEvent(code) {
@@ -303,15 +406,20 @@ export class Store {
       code,
       createdAt: Number(saved.createdAt) || this.#now(),
       updatedAt: Number(saved.updatedAt) || this.#now(),
-      revision: Number(saved.revision) || 0,
+      revision: wholeNumber(saved.revision),
+      removed: new Map(),
+      removedFloor: wholeNumber(saved.removedFloor),
       sources: new Map(),
     };
+    for (const entry of Array.isArray(saved.removed) ? saved.removed : []) {
+      if (Array.isArray(entry) && typeof entry[0] === 'string') event.removed.set(entry[0], wholeNumber(entry[1]));
+    }
     for (const raw of Array.isArray(saved.sources) ? saved.sources : []) {
       if (!isDeviceID(raw?.device)) continue;
       const crossings = new Map();
       for (const item of Array.isArray(raw.crossings) ? raw.crossings : []) {
         const crossing = cleanCrossing(item);
-        if (crossing) crossings.set(crossing.id, crossing);
+        if (crossing) crossings.set(crossing.id, { ...crossing, rev: Math.min(wholeNumber(item.rev), event.revision) });
       }
       event.sources.set(raw.device, {
         device: raw.device,
@@ -333,6 +441,8 @@ export class Store {
       createdAt: event.createdAt,
       updatedAt: event.updatedAt,
       revision: event.revision,
+      removed: [...event.removed],
+      removedFloor: event.removedFloor,
       sources: [...event.sources.values()].map((source) => ({
         ...source,
         crossings: [...source.crossings.values()],

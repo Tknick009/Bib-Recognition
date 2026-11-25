@@ -54,6 +54,16 @@ enum TimeFormat {
         return Double(hours * 3600 + minutes * 60) + seconds
     }
 
+    /// The moment on `day` at which a clock shows the given time of day
+    /// (seconds since midnight). Not the same as "midnight plus that many
+    /// seconds" on the days the clocks go forward or back.
+    static func moment(on day: Date, secondsIntoDay: Double, calendar: Calendar) -> Date? {
+        guard secondsIntoDay >= 0, secondsIntoDay < 86_400 else { return nil }
+        let whole = Int(secondsIntoDay)
+        let date = calendar.date(bySettingHour: whole / 3600, minute: whole % 3600 / 60, second: whole % 60, of: day)
+        return date?.addingTimeInterval(secondsIntoDay - Double(whole))
+    }
+
     /// Year, month and day for a count of days since 1970-01-01.
     static func civilDate(daysSinceEpoch days: Int64) -> (year: Int, month: Int, day: Int) {
         // Days are counted from 0000-03-01 so that leap days fall at the end

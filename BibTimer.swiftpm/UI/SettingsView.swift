@@ -11,11 +11,19 @@ struct SettingsView: View {
     @State private var loaded = false
     @State private var hubCheck: HubCheck?
     @State private var isCheckingHub = false
+    /// What is typed in the server fields. It only replaces the address and
+    /// key in use once the server has answered.
+    @State private var hubAddressDraft = ""
+    @State private var hubKeyDraft = ""
 
-    /// The outcome of "Check the connection".
+    /// The outcome of a connection check.
     struct HubCheck: Equatable {
         var ok: Bool
         var message: String
+        /// What the fields showed when it was made. The outcome is only
+        /// shown for as long as they still show the same.
+        var address: String
+        var key: String
     }
 
     var body: some View {
@@ -58,6 +66,8 @@ struct SettingsView: View {
 
     private func load() {
         serversText = settingsStore.settings.ntpServers.joined(separator: "\n")
+        hubAddressDraft = settingsStore.settings.hubAddress
+        hubKeyDraft = settingsStore.settings.hubKey
         ignoredText = settingsStore.settings.rules.ignored.joined(separator: ", ")
     }
 
@@ -184,18 +194,18 @@ struct SettingsView: View {
 
     private var hubSection: some View {
         Section {
-            TextField("Server address", text: $settingsStore.settings.hubAddress)
+            TextField("Server address", text: $hubAddressDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
-            TextField("Access key", text: $settingsStore.settings.hubKey)
+            TextField("Access key", text: $hubKeyDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             Button {
-                Task { await checkHub() }
+                Task { await connectHub() }
             } label: {
                 HStack {
-                    Text("Check the connection")
+                    Text(hubIsAsEntered ? "Check the connection" : "Connect")
                     if isCheckingHub {
                         Spacer()
                         ProgressView()
@@ -203,45 +213,77 @@ struct SettingsView: View {
                 }
             }
             .disabled(isCheckingHub)
-            if let hubCheck {
+            if let hubCheck, hubCheck.address == hubAddressDraft, hubCheck.key == hubKeyDraft {
                 Label(hubCheck.message, systemImage: hubCheck.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(hubCheck.ok ? Color.green : Color.red)
+            }
+            if settingsStore.settings.hub != nil {
+                Button("Stop sending results", role: .destructive) {
+                    settingsStore.settings.hubAddress = ""
+                    settingsStore.settings.hubKey = ""
+                    hubAddressDraft = ""
+                    hubKeyDraft = ""
+                    hubCheck = nil
+                }
             }
         } header: {
             Text("Live results")
         } footer: {
-            Text("Optional. If you run the Bib Timer results server, enter its address and access key here, the same on every iPad. Results are then copied to it as they are recorded, for your scoring computer to read. Everything is still saved on this iPad first, and nothing is lost if the connection drops.")
-        }
-        .onChange(of: settingsStore.settings.hubAddress) { _, _ in
-            hubCheck = nil
-        }
-        .onChange(of: settingsStore.settings.hubKey) { _, _ in
-            hubCheck = nil
+            Text("Optional. If you run the Bib Timer results server, enter its address and access key here, the same on every iPad, and tap Connect. Results are then copied to it as they are recorded, for your scoring computer to read. Everything is still saved on this iPad first, and nothing is lost if the connection drops. A new address and key only come into use once the server there has accepted the key.")
         }
     }
 
-    private func checkHub() async {
-        guard let hub = settingsStore.settings.hub else {
-            let hasAddress = HubPlanner.baseURL(from: settingsStore.settings.hubAddress) != nil
-            hubCheck = HubCheck(ok: false, message: hasAddress
-                ? "Enter the access key."
-                : "Enter the server's address, for example my-results.up.railway.app.")
+    /// True when the fields show the address and key that are in use.
+    private var hubIsAsEntered: Bool {
+        settingsStore.settings.hub != nil
+            && hubAddressDraft == settingsStore.settings.hubAddress
+            && hubKeyDraft == settingsStore.settings.hubKey
+    }
+
+    /// Asks the server at the entered address whether it accepts the entered
+    /// key, and only then puts the two into use.
+    @MainActor
+    private func connectHub() async {
+        let typedAddress = hubAddressDraft
+        let typedKey = hubKeyDraft
+        let address = typedAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = HubPlanner.normalizedKey(typedKey)
+        guard let base = HubPlanner.baseURL(from: address) else {
+            hubCheck = HubCheck(ok: false, message: "Enter the server's address, for example my-results.up.railway.app.", address: typedAddress, key: typedKey)
+            return
+        }
+        guard !key.isEmpty else {
+            hubCheck = HubCheck(ok: false, message: "Enter the access key.", address: typedAddress, key: typedKey)
             return
         }
         isCheckingHub = true
         defer { isCheckingHub = false }
+
+        var problem: String
         do {
-            let ping = try await HubClient(base: hub.base, key: hub.key).ping()
-            if ping.access != "full" {
-                hubCheck = HubCheck(ok: false, message: "This key can only view results. iPads need the main access key.")
-            } else if ping.persistent == false {
-                hubCheck = HubCheck(ok: true, message: "Connected. The server is keeping results in memory only.")
-            } else {
-                hubCheck = HubCheck(ok: true, message: "Connected.")
+            let ping = try await HubClient(base: base, key: key).ping()
+            if ping.access == "full" {
+                settingsStore.settings.hubAddress = address
+                settingsStore.settings.hubKey = key
+                // The fields show what is now in use, unless they have been
+                // typed in again in the meantime.
+                if hubAddressDraft == typedAddress { hubAddressDraft = address }
+                if hubKeyDraft == typedKey { hubKeyDraft = key }
+                let message = ping.persistent == false
+                    ? "Connected. The server is keeping results in memory only."
+                    : "Connected."
+                hubCheck = HubCheck(ok: true, message: message, address: address, key: key)
+                return
             }
+            problem = "This key can only view results. iPads need the main access key."
         } catch {
-            hubCheck = HubCheck(ok: false, message: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            problem = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+        let inUse = settingsStore.settings
+        if inUse.hub != nil, inUse.hubAddress != address || inUse.hubKey != key {
+            problem += " Results still go to the server that was set up before."
+        }
+        hubCheck = HubCheck(ok: false, message: problem, address: typedAddress, key: typedKey)
     }
 
     private var serversSection: some View {

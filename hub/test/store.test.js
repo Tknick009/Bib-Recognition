@@ -168,6 +168,111 @@ test('limits are enforced', () => {
   const store = new Store();
   const many = Array.from({ length: limits.crossingsPerSource + 1 }, (_, index) => crossing(`c${index}`, '1', index));
   assert.match(store.applyPush('race', deviceA, push('Finish', many)).error, /Too many results/);
-  // The rejected upload changed nothing.
-  assert.equal(store.results('race').count, 0);
+  // The refused upload left no trace.
+  assert.equal(store.results('race'), null);
+  assert.deepEqual(store.listEvents(), []);
+
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '1', 10)]));
+  assert.match(store.applyPush('race', deviceA, push('Finish', many)).error, /Too many results/);
+  assert.deepEqual(store.results('race').rows.map((row) => row.id), ['a']);
+  assert.equal(store.revision('race'), 1);
+});
+
+test('an iPad checking in does not count as a change to the results', () => {
+  let clock = 1000;
+  const store = new Store({ now: () => clock });
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '1', 10)]));
+  assert.equal(store.revision('race'), 1);
+
+  clock = 5000;
+  // The same list again, and an upload with nothing in it: nothing is new.
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '1', 10)]));
+  store.applyPush('race', deviceA, push('Finish', [], { full: false }));
+  assert.equal(store.revision('race'), 1);
+  // But the hub knows the iPad is still there.
+  assert.equal(store.lastHeard('race'), 5000);
+  assert.equal(store.results('race').stations[0].updatedAt, 5000);
+
+  // A start time is a change even without new results.
+  store.applyPush('race', deviceA, push('Finish', [], { full: false, startTime: 3 }));
+  assert.equal(store.revision('race'), 2);
+});
+
+test('a reader can ask for what changed since the revision it has', () => {
+  const store = new Store();
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '1', 10), crossing('b', '2', 20)]));
+  store.applyPush('race', deviceA, push('Finish', [crossing('c', '3', 30)], { full: false }));
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '11', 10)], { full: false, deleted: ['b'] }));
+  assert.equal(store.revision('race'), 3);
+
+  const everything = store.changes('race');
+  assert.equal(everything.full, true);
+  assert.deepEqual(everything.rows.map((row) => [row.id, row.bib]), [['a', '11'], ['c', '3']]);
+  assert.deepEqual(everything.removed, []);
+
+  const sinceFirst = store.changes('race', 1);
+  assert.equal(sinceFirst.full, false);
+  assert.equal(sinceFirst.revision, 3);
+  assert.deepEqual(sinceFirst.rows.map((row) => [row.id, row.bib, row.station]), [['a', '11', 'Finish'], ['c', '3', 'Finish']]);
+  assert.deepEqual(sinceFirst.removed, ['b']);
+
+  const sinceSecond = store.changes('race', 2);
+  assert.deepEqual(sinceSecond.rows.map((row) => row.id), ['a']);
+  assert.deepEqual(sinceSecond.removed, ['b']);
+
+  const upToDate = store.changes('race', 3);
+  assert.equal(upToDate.full, false);
+  assert.deepEqual(upToDate.rows, []);
+  assert.deepEqual(upToDate.removed, []);
+
+  // A revision the hub never had, or nonsense, gets everything.
+  assert.equal(store.changes('race', 99).full, true);
+  assert.equal(store.changes('race', -1).full, true);
+  assert.equal(store.changes('race', 1.5).full, true);
+  assert.equal(store.changes('nothing-here'), null);
+});
+
+test('a renamed station and a result that comes back are passed on correctly', () => {
+  const store = new Store();
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '1', 10), crossing('b', '2', 20)]));
+  store.applyPush('race', deviceA, push('Finish A', [], { full: false }));
+  assert.deepEqual(store.changes('race', 1).rows.map((row) => [row.id, row.station]), [['a', 'Finish A'], ['b', 'Finish A']]);
+
+  store.applyPush('race', deviceA, push('Finish A', [], { full: false, deleted: ['b'] }));
+  assert.deepEqual(store.changes('race', 2).removed, ['b']);
+  store.applyPush('race', deviceA, push('Finish A', [crossing('b', '2', 20)], { full: false }));
+  const changes = store.changes('race', 2);
+  assert.deepEqual(changes.rows.map((row) => row.id), ['b']);
+  assert.deepEqual(changes.removed, []);
+});
+
+test('revisions and removals survive a restart', () => {
+  const dataDir = temporaryDirectory();
+  const first = new Store({ dataDir });
+  first.applyPush('race', deviceA, push('Finish', [crossing('a', '1', 10), crossing('b', '2', 20)]));
+  first.applyPush('race', deviceA, push('Finish', [crossing('c', '3', 30)], { full: false, deleted: ['a'] }));
+  first.flush();
+
+  const second = new Store({ dataDir });
+  assert.equal(second.revision('race'), 2);
+  const changes = second.changes('race', 1);
+  assert.equal(changes.full, false);
+  assert.deepEqual(changes.rows.map((row) => row.id), ['c']);
+  assert.deepEqual(changes.removed, ['a']);
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('when too many removals have piled up, old readers are sent everything', () => {
+  const store = new Store();
+  const total = limits.removalsPerEvent + 10;
+  const many = Array.from({ length: total }, (_, index) => crossing(`c${index}`, '1', index));
+  store.applyPush('race', deviceA, push('Finish', many.slice(0, limits.crossingsPerSource)));
+  assert.equal(store.revision('race'), 1);
+  // Everything is removed in one go.
+  store.applyPush('race', deviceA, push('Finish', [crossing('keep', '9', 1)]));
+  assert.equal(store.revision('race'), 2);
+  // The hub could not keep all the removals, so it does not pretend to.
+  assert.equal(store.changes('race', 1).full, true);
+  assert.deepEqual(store.changes('race', 1).rows.map((row) => row.id), ['keep']);
+  assert.equal(store.changes('race', 2).full, false);
 });

@@ -35,12 +35,13 @@ struct RootView: View {
                         .padding(.vertical, 2)
                     }
                     .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
+                        Button {
                             raceToDelete = summary
                             confirmingDelete = true
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
+                        .tint(.red)
                     }
                 }
             }

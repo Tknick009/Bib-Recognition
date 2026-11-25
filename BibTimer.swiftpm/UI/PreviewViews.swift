@@ -181,10 +181,20 @@ struct AdjustOverlay: View {
     @ObservedObject var model: OverlayModel
     @Binding var settings: AppSettings
 
-    /// Where each handle was when its drag began.
-    @State private var dragOrigins: [Int: NormPoint] = [:]
+    /// For each handle being dragged: where on the screen the drag started and
+    /// where the handle's point was then. A drag that starts somewhere else is
+    /// a new drag, even if the previous one never reported that it ended.
+    @State private var drags: [Int: DragStart] = [:]
+
+    private struct DragStart {
+        var screen: CGPoint
+        var origin: NormPoint
+    }
 
     private static let minimumZoneSide = 0.15
+    /// Handles are drawn at least this far inside the view, so that one whose
+    /// point lies on the very edge of the picture can still be grabbed.
+    private static let edgeInset: CGFloat = 26
 
     var body: some View {
         GeometryReader { proxy in
@@ -192,28 +202,30 @@ struct AdjustOverlay: View {
             let zone = settings.effectiveScanZone
             let topLeft = NormPoint(x: zone.minX, y: zone.minY)
             let bottomRight = NormPoint(x: zone.maxX, y: zone.maxY)
+            let side = AdjustOverlay.minimumZoneSide
             ZStack {
-                handle(0, at: topLeft, color: .cyan, mapping: mapping) { point in
-                    setZone(NormRect(corner: point, corner: bottomRight))
+                // A corner stops short of the opposite corner instead of
+                // passing it.
+                handle(0, at: topLeft, color: .cyan, mapping: mapping, viewSize: proxy.size) { point in
+                    let x = min(point.x, bottomRight.x - side)
+                    let y = min(point.y, bottomRight.y - side)
+                    settings.scanZone = NormRect(x: x, y: y, width: bottomRight.x - x, height: bottomRight.y - y)
                 }
-                handle(1, at: bottomRight, color: .cyan, mapping: mapping) { point in
-                    setZone(NormRect(corner: topLeft, corner: point))
+                handle(1, at: bottomRight, color: .cyan, mapping: mapping, viewSize: proxy.size) { point in
+                    let x = max(point.x, topLeft.x + side)
+                    let y = max(point.y, topLeft.y + side)
+                    settings.scanZone = NormRect(x: topLeft.x, y: topLeft.y, width: x - topLeft.x, height: y - topLeft.y)
                 }
                 if settings.timingMode == .line {
-                    handle(2, at: settings.line.a, color: .orange, mapping: mapping) { point in
+                    handle(2, at: settings.line.a, color: .orange, mapping: mapping, viewSize: proxy.size) { point in
                         setLine(a: point, b: settings.line.b)
                     }
-                    handle(3, at: settings.line.b, color: .orange, mapping: mapping) { point in
+                    handle(3, at: settings.line.b, color: .orange, mapping: mapping, viewSize: proxy.size) { point in
                         setLine(a: settings.line.a, b: point)
                     }
                 }
             }
         }
-    }
-
-    private func setZone(_ zone: NormRect) {
-        guard zone.width >= AdjustOverlay.minimumZoneSide, zone.height >= AdjustOverlay.minimumZoneSide else { return }
-        settings.scanZone = zone
     }
 
     private func setLine(a: NormPoint, b: NormPoint) {
@@ -224,9 +236,15 @@ struct AdjustOverlay: View {
         settings.line = line
     }
 
-    private func handle(_ id: Int, at point: NormPoint, color: Color, mapping: ViewMapping,
+    private func handle(_ id: Int, at point: NormPoint, color: Color, mapping: ViewMapping, viewSize: CGSize,
                         move: @escaping (NormPoint) -> Void) -> some View {
-        Circle()
+        let exact = mapping.point(point)
+        let inset = AdjustOverlay.edgeInset
+        let shown = CGPoint(
+            x: min(max(exact.x, inset), max(viewSize.width - inset, inset)),
+            y: min(max(exact.y, inset), max(viewSize.height - inset, inset))
+        )
+        return Circle()
             .fill(color)
             .frame(width: 30, height: 30)
             .overlay(Circle().stroke(Color.white, lineWidth: 3))
@@ -237,22 +255,26 @@ struct AdjustOverlay: View {
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
-                        let origin = dragOrigins[id] ?? point
-                        if dragOrigins[id] == nil {
-                            dragOrigins[id] = point
+                        let start: DragStart
+                        if let known = drags[id], known.screen == value.startLocation {
+                            start = known
+                        } else {
+                            start = DragStart(screen: value.startLocation, origin: point)
+                            drags[id] = start
                         }
-                        let start = mapping.point(origin)
+                        // The point moves by as much as the finger has.
+                        let from = mapping.point(start.origin)
                         let moved = mapping.normPoint(
-                            viewX: Double(start.x + value.translation.width),
-                            viewY: Double(start.y + value.translation.height)
+                            viewX: Double(from.x + value.translation.width),
+                            viewY: Double(from.y + value.translation.height)
                         )
                         move(moved.clamped())
                     }
                     .onEnded { _ in
-                        dragOrigins[id] = nil
+                        drags[id] = nil
                     }
             )
-            .position(mapping.point(point))
+            .position(shown)
     }
 }
 #endif

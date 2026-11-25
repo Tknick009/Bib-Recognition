@@ -29,8 +29,8 @@ final class AppModel: ObservableObject {
         self.hub = hub
 
         // What the camera records goes into the open race.
-        capture.sightingHandler = { sightings in
-            store.record(sightings, rule: settings.settings.repeatRule)
+        capture.sightingHandler = { sightings, raceID in
+            store.record(sightings, for: raceID, rule: settings.settings.repeatRule)
         }
 
         // The analysis follows the settings and the open race's start list.
@@ -42,11 +42,19 @@ final class AppModel: ObservableObject {
             }
             .store(in: &subscriptions)
 
-        // Results are copied to the results server, if one is set up.
+        // Results are copied to the results server, if one is set up. It only
+        // needs to hear about the few settings that concern it, not about
+        // every step of a slider.
         settings.$settings
-            .combineLatest(store.$race)
-            .sink { newSettings, race in
-                hub.update(race: race, settings: newSettings)
+            .map { HubSync.Config($0) }
+            .removeDuplicates()
+            .sink { config in
+                hub.update(config: config)
+            }
+            .store(in: &subscriptions)
+        store.$race
+            .sink { race in
+                hub.update(race: race)
             }
             .store(in: &subscriptions)
 
