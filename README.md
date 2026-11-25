@@ -306,8 +306,9 @@ it, change `HUB_KEY` on Railway and enter the new one on the iPads.
 ### How much mobile data it uses
 
 Very little. Only numbers and times are sent, never video or photos. These
-figures were measured by running a simulated race against the real hub over an
-encrypted connection and counting every byte in both directions, for **one
+figures were measured by playing a simulated race into the real hub over an
+encrypted connection, with a program standing in for the iPad and sending what
+the app sends, and counting every byte in both directions. They are for **one
 iPad with the app open for two hours**:
 
 | Results recorded on that iPad | Data used by that iPad |
@@ -345,8 +346,9 @@ iPadOS itself can use far more data than all of this, for example by syncing
 photos or downloading updates. To stop that on race day, switch on **Low Data
 Mode** for the connection the iPads use (*Settings → Cellular → Cellular Data
 Options*, or for a hotspot *Settings → Wi-Fi →* ⓘ next to its name). It pauses
-the system's own background downloads; Bib Timer's uploads and time sync carry
-on.
+the system's own background downloads. Bib Timer does not opt out of working in
+Low Data Mode, so its uploads and time sync should carry on; check that in
+your dry run.
 
 ### Running the hub somewhere else
 
