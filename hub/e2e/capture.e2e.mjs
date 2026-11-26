@@ -171,6 +171,12 @@ async function run(page, bibs, settings = {}) {
 
 const truth = (page) => page.evaluate(() => window.__scene.runners.map((runner) => ({ bib: runner.bib, crossWall: runner.crossWall })));
 
+/** The row of the list that shows this bib ("?" for a result without a number). Waits for it to be drawn. */
+function rowOf(page, bib) {
+  const shown = bib === '' ? '\\?' : bib;
+  return page.locator('#rows .row').filter({ has: page.locator('.bib', { hasText: new RegExp(`^${shown}$`) }) }).first();
+}
+
 const tests = [];
 const test = (name, body) => tests.push({ name, body });
 const shared = {};
@@ -249,7 +255,7 @@ test('capture', async () => {
       const store = request.result.transaction('photos', 'readonly').objectStore('photos');
       Promise.all(ids.map((id) => new Promise((done) => {
         const get = store.get(id);
-        get.onsuccess = () => done(get.result ? get.result.size : 0);
+        get.onsuccess = () => done(get.result?.bytes?.byteLength ?? 0);
         get.onerror = () => done(0);
       }))).then(resolve);
     };
@@ -262,7 +268,7 @@ test('by hand', async () => {
   // A time without a number, to be filled in afterwards.
   await page.click('#mark');
   await until(async () => (await state(page)).results.some((result) => result.bib === ''), 'the mark to be listed');
-  await page.click('#rows li:first-child .row');
+  await rowOf(page, '').click();
   await page.waitForSelector('#edit-dialog[open]');
   await until(() => page.$('#edit-photo:not([hidden])'), 'the photo taken with the mark');
   await shot(page, 'edit');
@@ -279,8 +285,7 @@ test('by hand', async () => {
   await until(async () => (await state(page)).results.some((result) => result.bib === '77'), 'the typed number to be listed');
 
   // A number the camera read wrongly is put right, and stays put.
-  const row = await page.evaluateHandle(() => [...document.querySelectorAll('#rows .row')].find((item) => item.querySelector('.bib').textContent === '103'));
-  await row.click();
+  await rowOf(page, '103').click();
   await page.waitForSelector('#edit-dialog[open]');
   await page.fill('#edit-bib', '108');
   await page.fill('#edit-time', 'nonsense');
@@ -301,8 +306,7 @@ test('by hand', async () => {
   assert.ok(Math.abs(corrected.time - Math.floor(before.time + 2) - 0.25) < 0.002, 'the typed time is taken');
 
   // One is deleted.
-  const doomed = await page.evaluateHandle(() => [...document.querySelectorAll('#rows .row')].find((item) => item.querySelector('.bib').textContent === '205'));
-  await doomed.click();
+  await rowOf(page, '205').click();
   await page.waitForSelector('#edit-dialog[open]');
   await page.click('#edit-delete');
   now = await state(page);

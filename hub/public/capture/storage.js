@@ -170,12 +170,27 @@ export class Storage {
     }
   }
 
-  savePhoto(id, blob) {
-    return this.#photos('readwrite', (store) => store.put(blob, id));
+  /**
+   * Keeps a picture. It is kept as plain bytes: Safari does not take
+   * pictures as such into its database in every mode (not in private
+   * browsing, for one).
+   */
+  async savePhoto(id, blob) {
+    let bytes;
+    try {
+      bytes = await blob.arrayBuffer();
+    } catch {
+      return null;
+    }
+    return this.#photos('readwrite', (store) => store.put({ type: blob.type || 'image/jpeg', bytes }, id));
   }
 
-  photo(id) {
-    return this.#photos('readonly', (store) => store.get(id));
+  /** The picture kept under this identifier, or null. */
+  async photo(id) {
+    const kept = await this.#photos('readonly', (store) => store.get(id));
+    if (!kept) return null;
+    if (kept instanceof Blob) return kept;
+    return kept.bytes ? new Blob([kept.bytes], { type: kept.type || 'image/jpeg' }) : null;
   }
 
   deletePhotos(ids) {

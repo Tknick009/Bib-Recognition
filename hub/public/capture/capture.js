@@ -82,6 +82,7 @@ function showTrouble(title, text, { again = true } = {}) {
 // ---- Notices over the picture ----
 
 const notices = new Map();
+const closedNotices = new Map();
 
 /**
  * Shows a message over the picture, or changes the one with the same key.
@@ -89,7 +90,9 @@ const notices = new Map();
  * @param {object} options `level` ('warn', 'bad' or 'info'), `action` and `run` for a button,
  *   `lasts` to take it away again after so many milliseconds, `dismiss` for a button that closes it
  */
-function notice(key, text, { level = 'warn', action = null, run = null, lasts = 0, dismiss = false } = {}) {
+function notice(key, text, { level = 'warn', action = null, run = null, lasts = 0, dismiss = false, about = null } = {}) {
+  // Closed by hand, and nothing new to say (`about` tells one occasion from the next).
+  if (about !== null && closedNotices.get(key) === about) return;
   let entry = notices.get(key);
   if (!entry) {
     const box = element('div');
@@ -111,10 +114,14 @@ function notice(key, text, { level = 'warn', action = null, run = null, lasts = 
     entry.button.addEventListener('click', run);
     entry.box.append(entry.button);
   }
+  entry.about = about;
   if (dismiss && !entry.close) {
     entry.close = element('button', null, 'OK');
     entry.close.type = 'button';
-    entry.close.addEventListener('click', () => clearNotice(key));
+    entry.close.addEventListener('click', () => {
+      if (entry.about !== null) closedNotices.set(key, entry.about);
+      clearNotice(key);
+    });
   }
   if (entry.close) entry.box.append(entry.close);
   clearTimeout(entry.timer);
@@ -339,7 +346,33 @@ function fillRaceChoice() {
   select.replaceChildren(...options);
   const wanted = options.some((option) => option.value === chosen) ? chosen : storage.race ? `local:${storage.race.id}` : 'new';
   select.value = wanted;
-  $('race-name-field').hidden = select.value !== 'new';
+  showRaceChoice();
+}
+
+/** Shows what goes with the race chosen: a name to give a new one, a way to clear an old one off the iPad. */
+function showRaceChoice() {
+  const choice = $('race-choice').value;
+  $('race-name-field').hidden = choice !== 'new';
+  $('remove-race').hidden = !choice.startsWith('local:');
+}
+
+/** Takes a race off this iPad: its results and their photos. What the results site holds stays there. */
+function removeRace() {
+  const choice = $('race-choice').value;
+  const race = choice.startsWith('local:') ? storage.races.find((item) => item.id === choice.slice('local:'.length)) : null;
+  if (!race) return;
+  const count = race.crossings.length;
+  const waiting = race.unsent ? uploader.waiting(race, race.station, timeZone) : 0;
+  const question = `Remove “${race.name}” and its ${count} ${count === 1 ? 'result' : 'results'} from this iPad?\n\n` +
+    (waiting > 0
+      ? `${waiting} of them may not have reached the results site, and would be lost.`
+      : 'What the results site holds stays there.');
+  if (!confirm(question)) return;
+  storage.deletePhotos(race.crossings.map((crossing) => crossing.id));
+  storage.races = storage.races.filter((item) => item !== race);
+  if (storage.currentRaceID === race.id) storage.currentRaceID = null;
+  storage.saveNow();
+  fillRaceChoice();
 }
 
 function openSetup() {
@@ -613,12 +646,18 @@ function look(time) {
   if (trial.current && trial.looks < trialLooks) trial.note(trial.current);
   reader.scan(image.data, zone.width, zone.height, plan.options).then((result) => {
     looking = false;
-    took(time, plan, result, width, height);
-  }, () => {
-    looking = false;
-  }).finally(() => {
+    try {
+      took(time, plan, result, width, height);
+    } catch (error) {
+      console.error(error);
+    }
     // After `took`, which cuts its photos out of this picture.
     nextLook();
+  }, () => {
+    looking = false;
+    // The reader could not take this picture. Not at once again: if it
+    // keeps failing, that would be thirty times a second.
+    setTimeout(nextLook, 500);
   });
 }
 
@@ -999,7 +1038,7 @@ function drawDeviceClock() {
   const text = `${found.count} ${found.count === 1 ? 'result was' : 'results were'} timed by the iPad’s own clock, which is ` +
     `${size < 0.0995 ? `${Math.round(size * 1000)} ms` : `${size.toFixed(2)} s`} ${found.shift >= 0 ? 'behind' : 'ahead of'} the results site’s.`;
   paragraph.textContent = `${text} Correcting them moves their times by that much.`;
-  notice('device-clock', text, { level: 'info', action: 'Correct them', run: fixDeviceClockTimes, dismiss: true });
+  notice('device-clock', text, { level: 'info', action: 'Correct them', run: fixDeviceClockTimes, dismiss: true, about: String(found.count) });
 }
 
 function fixDeviceClockTimes() {
@@ -1379,7 +1418,7 @@ function whatIsMissing() {
   }
   // A few bytes of a program that uses the fast arithmetic the reader is built on.
   const fastArithmetic = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
-  const tooOld = 'It needs iPadOS 16.4 or later (Settings → General → Software Update), or a current Chrome, Edge or Firefox on another device.';
+  const tooOld = 'It needs iPadOS 16.5 or later (Settings → General → Software Update), or a current Chrome, Edge or Firefox on another device.';
   if (typeof WebAssembly !== 'object' || !WebAssembly.validate(fastArithmetic)) return ['This browser is too old to read bibs', tooOld];
   if (typeof Worker !== 'function' || typeof HTMLDialogElement !== 'function' || !navigator.mediaDevices?.getUserMedia) {
     return ['This browser cannot run the camera page', tooOld];
@@ -1388,15 +1427,21 @@ function whatIsMissing() {
 }
 
 /** True unless this page is already open in another tab on this iPad: two would overwrite each other's results. */
-function onlyTab() {
-  if (!navigator.locks?.request) return Promise.resolve(true);
-  return new Promise((resolve) => {
+async function onlyTab() {
+  if (!navigator.locks?.request) return true;
+  const claim = () => new Promise((resolve) => {
     navigator.locks.request('bibtimer-capture', { ifAvailable: true }, (lock) => {
       resolve(lock !== null);
       // Held for as long as the page stays open.
       return lock ? new Promise(() => {}) : undefined;
     }).catch(() => resolve(true));
   });
+  // A page that is being loaded again may find its earlier self not quite gone yet.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (await claim()) return true;
+    await wait(300);
+  }
+  return false;
 }
 
 /** Has the browser keep a copy of the page, so that it also opens without a connection. */
@@ -1437,9 +1482,8 @@ function wire() {
     event.preventDefault();
     setUp();
   });
-  $('race-choice').addEventListener('change', () => {
-    $('race-name-field').hidden = $('race-choice').value !== 'new';
-  });
+  $('race-choice').addEventListener('change', showRaceChoice);
+  $('remove-race').addEventListener('click', removeRace);
 
   $('camera-start').addEventListener('click', () => startCamera());
   $('record').addEventListener('click', () => setRecording(!session.recording));

@@ -54,7 +54,11 @@
           <input id="station" type="text" maxlength="40" autocomplete="off" placeholder="Finish A">
         </label>
         <p id="setup-problem" class="problem" hidden></p>
-        <button type="submit">Open the camera</button>
+        <div class="buttons">
+          <button type="submit">Open the camera</button>
+          <span class="spacer"></span>
+          <button id="remove-race" class="quiet danger" type="button" hidden>Remove this race from this iPad</button>
+        </div>
       </form>
       <p class="note">Every iPad at a race sends its results to the same place on the results site. Give the race the same
         name on each iPad, or set up the first one and choose that race from the list on the others. Give each iPad its
