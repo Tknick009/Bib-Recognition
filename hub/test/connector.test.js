@@ -46,8 +46,9 @@ for (const shell of (process.env.BIBTIMER_POWERSHELL ?? 'pwsh,powershell').split
       // The program started from its file, as when it has been downloaded.
       fromFile: (args) => [shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args]],
       // The program fetched from the hub and run without ever being a file:
-      // the line the results page gives the operator to paste.
-      fromHub: (base, args) => [shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+      // the line the results page gives the operator to paste, word for word.
+      fromHub: (base, args) => [shell, ['-NoProfile', '-NonInteractive', '-Command',
+        "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; " +
         `& ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing '${base}/runscore.ps1'))) ${args.join(' ')}`]],
     });
   }
