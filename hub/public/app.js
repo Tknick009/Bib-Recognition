@@ -499,11 +499,15 @@ function drawRunScore() {
     ? 'No iPad is ticked above, so there would be nothing to pass on.'
     : `Results from ${all ? 'every iPad' : shown.map((station) => station.label).join(', ')} are passed on` +
       `${all ? '' : ' (the ones ticked above)'}. To feed two RunScore inputs, tick one iPad at a time and make a line for each port.`;
-  const line = runScoreLine();
+  // With no iPad ticked there is no line to give: one that names no iPad
+  // would mean all of them.
+  const line = shown.length === 0 ? '' : runScoreLine();
   if ($('rs-command').value !== line) $('rs-command').value = line;
+  $('rs-copy').disabled = shown.length === 0;
 }
 
 async function copyRunScoreLine(test) {
+  if (!test && shownStations().length === 0) return;
   const line = runScoreLine({ test });
   try {
     await navigator.clipboard.writeText(line);
