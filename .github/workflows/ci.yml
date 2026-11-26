@@ -57,6 +57,8 @@ jobs:
           curl -fsS -H "Authorization: Bearer ci-image-check-key" http://127.0.0.1:8080/api/ping
           echo
           curl -fsS -o /dev/null http://127.0.0.1:8080/
+          # The program for the scoring computer has to be in the image too.
+          curl -fsS http://127.0.0.1:8080/runscore.ps1 | grep -q "Bib Timer -> RunScore"
           docker logs hub
 
   connector:
