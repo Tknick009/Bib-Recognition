@@ -234,6 +234,9 @@ function forgetEvent() {
   state.hiddenDevices.clear();
   delete $('stations').dataset.shape;
   $('note').hidden = true;
+  // The line for RunScore belongs to the event that was shown.
+  $('rs-command').value = '';
+  $('rs-which').textContent = '';
 }
 
 function selectEvent(code) {
