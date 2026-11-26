@@ -1,284 +1,311 @@
 # Bib Timer
 
-Time a race with iPads. Point an iPad at the finish line and it reads the
-runners' bib numbers with its camera, stamps each one with time taken from NTP
-time servers, and gives you a CSV list of bibs and times.
+Time a race with iPads and nothing but Safari. Open a web page on an iPad,
+point the iPad at the finish line, and it reads the runners' bib numbers with
+its camera, gives each one a time, and sends the list to a results page that
+your scoring computer reads from, downloads as CSV, or feeds into RunScore.
 
-- **Reads bibs on the iPad itself**, from live video, using Apple's on-device
-  text recognition. No internet connection is needed for reading.
-- **NTP time.** Each iPad sets its race clock from NTP servers and shows how
-  accurate the sync is, so several iPads (start, splits, finish) agree with one
-  another.
-- **Virtual finish line.** You draw a line on the video; a bib's time is worked
-  out for the moment it crosses that line, not just whenever it was first read.
-- **A Mark button** records a time by hand for any runner the camera cannot
-  read; you type the number in afterwards.
-- **Every result can be checked and corrected.** Each has a small photo of the
-  runner, and its number can be edited or the result deleted.
-- **Results are saved continuously**, so a flat battery or a crash does not lose
-  a race.
-- **CSV export**, by AirDrop, Files, Mail or the clipboard.
-- **Live results on your scoring computer** (optional). With the iPads online,
-  they copy their results to a small website as they record them. The scoring
-  computer opens one address and sees every iPad's results combined, or
-  downloads them as CSV.
+- **Nothing to install on the iPads.** The camera is a page on your own
+  website (`https://your-address/capture/`). The same website collects the
+  results.
+- **Bibs are read on the iPad itself**, from live video. No video or photo
+  leaves the iPad; only numbers and times are sent.
+- **A finish line drawn on the picture.** A bib's time is worked out for the
+  moment it crosses that line, not for whenever it happened to be read.
+- **One clock for every iPad.** Each iPad keeps its clock in step with the
+  website's, which checks its own against time servers, and shows how exact
+  that is.
+- **A Mark button** takes a time by hand for any runner the camera cannot
+  read; the number is typed in afterwards, with a photo of the moment to go by.
+- **Every result can be checked and corrected**, on the iPad, with a small
+  photo of the runner.
+- **Results are kept on the iPad as well as sent**, so a lost connection, a
+  flat battery or a page that Safari reloads does not lose a race.
+- **Each iPad's results separately, or all together**, live on the results
+  page, as CSV files, or passed straight into **RunScore** over TCP.
 
-> **Try it before race day.** The timing logic is covered by automated tests and
-> the whole app is compiled in CI, but camera reading depends on your set-up:
-> the light, the distance, the bibs. Do a dry run with a few people walking and
-> running past, and keep a backup timing method for anything that matters.
+> **Try it with your own iPads well before race day.** The whole chain is
+> exercised by automated tests in desktop browsers, with a stand-in for the
+> camera (see [What has been tested](#what-has-been-tested)). It has **not been
+> run on a real iPad**. How fast an iPad reads, and how many runners it
+> catches, depends on the iPad, the light, the distance and the bibs, and only
+> a dry run shows it. Keep a backup timing method for anything that matters.
+
+If you *can* install an app on the iPads, there is one, and it is the better
+camera: see [The iPad app](docs/ipad-app.md). It sends its results to the same
+website, so app and page can be mixed.
 
 ## Contents
 
+- [How it fits together](#how-it-fits-together)
 - [What you need](#what-you-need)
-- [Putting the app on an iPad](#putting-the-app-on-an-ipad)
-- [At the race](#at-the-race)
-- [Several iPads](#several-ipads)
-- [Live results on your scoring computer](#live-results-on-your-scoring-computer)
-- [How accurate is it?](#how-accurate-is-it)
-- [The exported file](#the-exported-file)
-- [Settings](#settings)
+- [1. Put the site on Railway](#1-put-the-site-on-railway)
+- [2. On each iPad](#2-on-each-ipad)
+- [3. On the scoring computer](#3-on-the-scoring-computer)
+- [Sending results straight into RunScore](#sending-results-straight-into-runscore)
+- [How many runners will it catch?](#how-many-runners-will-it-catch)
+- [How accurate are the times?](#how-accurate-are-the-times)
+- [How much mobile data it uses](#how-much-mobile-data-it-uses)
+- [What is sent, and keeping it private](#what-is-sent-and-keeping-it-private)
+- [The files](#the-files)
+- [Settings on the camera page](#settings-on-the-camera-page)
 - [If something is not working](#if-something-is-not-working)
+- [What has been tested](#what-has-been-tested)
 - [For developers](#for-developers)
+
+## How it fits together
+
+```
+iPad (Finish A) ─┐                 ┌─▶ results page, live (any browser)
+iPad (Finish B) ─┼─ results ─▶ site ┼─▶ CSV files, per iPad or combined
+iPad (Start)    ─┘   (the site also ├─▶ RunScore, through a small program
+   Safari, at        serves the     │   on the scoring computer
+   /capture/         camera page)   └─▶ JSON, for anything else
+```
+
+One small website does everything: it serves the camera page to the iPads,
+takes in their results, and gives them out again. It is the `hub` folder of
+this repository, and it runs on any host that can run a Docker image. These
+instructions use [Railway](https://railway.com).
+
+**The race does not depend on the connection.** Each iPad keeps every result
+itself and sends it afterwards. If the signal drops, the iPad carries on
+reading, and sends what it has when the signal returns.
 
 ## What you need
 
-- An iPad (or iPhone) running iPadOS / iOS 17 or later. Newer devices scan
-  faster.
-- An internet connection **at some point before the race** so the iPad can sync
-  its clock: Wi-Fi, a phone hotspot or cellular. It does not have to be at the
-  venue (see [Time sync](#3-check-the-time-sync)).
-- A tripod or clamp. The iPad has to stay still.
-- To install: either the free **Swift Playgrounds** app on the iPad itself, or a
-  Mac with **Xcode**.
+- **iPads with iPadOS 16.5 or later; 17 or later is better.** Safari is the
+  only thing used. Newer iPads read faster. An iPhone works too.
+- **The website**, set up once (next section).
+- **A connection for the iPads**: Wi-Fi, a phone hotspot or cellular. It is
+  needed when the page is first opened (which fetches about 15 MB, once: do
+  that on Wi-Fi), to set the clock, and to send results. It may come and go
+  during the race.
+- **A tripod or clamp, and power.** The iPad has to stay still, and reading
+  bibs is hard work for it.
 
-## Putting the app on an iPad
+## 1. Put the site on Railway
 
-The app is the folder `BibTimer.swiftpm` in this repository. It is a Swift
-Playgrounds app project, which both Swift Playgrounds and Xcode can open.
+Railway's menus change from time to time, so a name may differ slightly from
+what is written here.
 
-### Option A: on the iPad, with Swift Playgrounds (no Mac needed)
+1. In Railway, create a **New Project**, choose **Deploy from GitHub repo** and
+   pick this repository. Railway builds the site from the `Dockerfile` in the
+   repository; there is nothing to configure for the build. The build fetches
+   the program that reads bib numbers, so it takes a couple of minutes.
+2. Open the new service's **Variables** and add `HUB_KEY`. Make it a long
+   phrase nobody would guess (at least 8 characters; 20 or more is better).
+   This is the access key: anyone who has it can see and change the results.
+   It is not something the site gives you; you choose it here, and type the
+   same phrase wherever the site asks for the access key.
+3. In the service's **Settings**, under networking, **generate a domain**. You
+   get an address like `https://something.up.railway.app`. If Railway asks
+   which port the app listens on, it is the number in the log line
+   `[hub] listening on port …` (normally 8080).
+4. Recommended: add a **Volume** to the service, mounted at `/data`. Results
+   are then kept across restarts. Without one the site starts empty after every
+   restart, and the iPads fill it again by themselves the next time their page
+   is open and online.
+5. Open the address in a browser and enter the key. The page says that no
+   results have arrived yet, and shows the way to the camera page.
 
-1. Install **Swift Playgrounds** from the App Store on the iPad.
-2. In Safari, open this repository on GitHub, tap **Code**, then **Download
-   ZIP**.
-3. Open the **Files** app, go to **Downloads** and tap the ZIP file to unpack
-   it.
-4. Open the unpacked folder and tap **BibTimer**. It opens in Swift Playgrounds.
-   (If it shows as an ordinary folder instead, move it into the *Playgrounds*
-   folder in Files, then open it from inside Swift Playgrounds.)
-5. Tap **Run** (▶). Allow camera access when asked.
+Optional variables:
 
-The app runs full screen from Swift Playgrounds. To use it again later, open the
-project in Swift Playgrounds and tap Run. Your races are kept between runs.
+| Variable | Effect |
+| --- | --- |
+| `HUB_VIEW_KEY` | A second key that can look at results but not change them, for an announcer or a results screen. It cannot be used on the iPads. |
+| `HUB_TIME_SERVERS` | The time servers the site checks its own clock against, separated by commas. Default: `time.cloudflare.com,time.google.com,time.apple.com,pool.ntp.org`. `none` switches the check off. |
 
-### Option B: from a Mac, with Xcode
+When this repository changes, Railway builds and starts the new version by
+itself. An iPad picks up a new version of the camera page the next time the
+page is loaded; one that is open during the change shows a message and carries
+on with the version it has until you choose to load the new one.
 
-This installs Bib Timer as an ordinary app with its own icon.
+## 2. On each iPad
 
-1. Download or clone this repository on the Mac.
-2. Double-click `BibTimer.swiftpm` to open it in Xcode (15 or later).
-3. Connect the iPad and choose it as the run destination. When Xcode asks about
-   signing, pick your Apple ID as the team in the app's settings.
-4. Press **Run**.
+### Open the camera page
 
-With a free Apple ID the installed app works for seven days before it has to be
-installed again from Xcode; with a paid Apple Developer account, a year.
+In **Safari**, go to your address with `/capture/` at the end:
 
-## At the race
+```
+https://YOUR-ADDRESS/capture/
+```
 
-### 1. Position the iPad
+The first time, the page asks for the **access key** and keeps it on the iPad.
+To save typing, press **Copy a link for the iPads** on the results page and
+send that link to the iPads (AirDrop, or a message): opening it enters the key.
+The link contains the key, so treat it like a password.
+
+The first time, the page also fetches the program that reads numbers: about
+15 MB. Do this on Wi-Fi, before race day. It is kept on the iPad, so it is not
+fetched again, and the page then opens even without a connection.
+
+### Set up the race
+
+- **Race.** On the first iPad choose *A new race* and name it. On the others,
+  either give the race the same name (iPads that name a race the same on the
+  same day are put together), or pick it from the list, where it appears once
+  the first iPad is set up.
+- **Where this iPad stands.** Its own name for each iPad: *Finish A*,
+  *Finish B*, *Start*. This is how their results are told apart later.
+
+Tap **Open the camera** and allow the camera when Safari asks. Safari asks
+again every time the page is loaded unless you tell it not to: tap the icon at
+the left of the address bar, **Website Settings**, and set **Camera** to
+**Allow**. Do that; a page that Safari has to reload in the middle of a race
+then gets its camera back without anyone tapping anything.
+
+### Set up the iPad itself
+
+- **Settings → Display & Brightness → Auto-Lock → Never.** The page keeps the
+  screen awake by itself; this is the second line of defence.
+- **Low Power Mode off** (Settings → Battery), and the iPad **on power**.
+- **Keep the page in front.** Safari stops the camera of a page that is not on
+  screen. *Guided Access* (Settings → Accessibility) locks the iPad to Safari
+  so that a stray touch cannot leave it.
+- **Only one tab** with the camera page. A second one says so and steps aside.
+- If the iPad has little storage left, free some: the page keeps the reading
+  program, your results and their photos on the iPad.
+
+### Position the iPad
 
 Bibs are on the front of the runners, so the camera has to face them.
 
 - Put the iPad **just past the finish line, looking back at the runners coming
-  toward it**.
-- Mount it **above head height, tilted down**, if you can. From up there it sees
-  over the front runners to the ones behind, and bibs move steadily down the
-  picture as runners approach, which is what the finish line needs.
-- Keep the sun behind the camera where possible. Bibs in deep shadow or with the
-  sun behind the runners are hard to read.
-- Landscape or portrait both work; landscape covers a wider course.
+  toward it**, as square-on as you can.
+- Mount it **above head height, tilted down**, if you can. From up there it
+  sees over the front runners to the ones behind, and bibs move steadily down
+  the picture as runners approach, which is what the finish line needs.
+- Keep the sun behind the camera where possible. Bibs in deep shadow, or with
+  the sun behind the runners, are hard to read.
+- Landscape covers a wider course. Fix the iPad before you draw the line: the
+  line is drawn on the picture, and turning the iPad turns the picture.
+- **Fill the picture with the place where runners finish.** A number is read
+  reliably once its digits are about a fortieth of the picture's height
+  (2.5 %), and more easily when larger. Move closer, or zoom in (Settings →
+  Zoom, where the iPad offers it).
 
-A bib can be read once its digits are about 1.5 % of the picture height, which
-as a rough guide is 4–5 m from the camera without zoom. Zooming in narrows the
-view and reaches further. Your dry run will show the real distance for your
-bibs and light.
+### The finish line and the search area
 
-### 2. Aim and adjust
+The picture shows what the camera reads: every number it takes for a bib gets
+a box. Have someone wearing a bib walk through the finish and watch the box:
+**yellow** means read once, **orange** means it is being followed, **green**
+means its time has been taken. This works before recording is started, so use
+it to try things out.
 
-Create a race (the **+** on the first screen) and you are on the timing screen
-with live video. Bibs the camera can read are outlined with their number. Tap
-**Adjust** (the viewfinder button):
+Tap **Finish line**:
 
-- **Orange dots** move the finish line. Put it where the bibs are in the
-  picture at the moment runners cross your real finish line. The arrow shows
-  the direction runners cross it; tap **Flip** if it points the wrong way.
-- **Blue dots** set the scan zone, the part of the picture that is searched.
-  Shrink it to leave out banners, clocks, parked cars and spectators. A smaller
-  zone also scans faster.
-- The **slider** zooms.
+- Drag the **round ends** to lay the line where the bibs are in the picture at
+  the moment runners cross your real finish line. The **arrow** shows the way
+  runners go; **Turn the arrow round** if it points the wrong way.
+- Drag the **square corners** to mark out the part of the picture where bibs
+  can be. Leave out banners, clocks, parked cars and spectators. **This is the
+  most useful thing you can do for speed:** the smaller the area, the more
+  often the iPad can look at it.
 
-Have someone wearing a bib walk through the finish and watch the outline: white
-means read once, yellow means it is being followed, green (while recording)
-means its time has been taken.
+Put the line a little above the bottom of the area, where bibs are still easy
+to read: a bib has to be read on both sides of the line for its crossing to be
+timed exactly.
 
-### 3. Check the time sync
+### Check the clock
 
-The badge at the top of the panel shows the clock's state.
+The badge at the top right shows the clock's state.
 
 | Badge | Meaning |
 | --- | --- |
-| Green, `NTP ±12 ms` | Synced; the clock is within that much of true time. |
-| Orange or red, `NTP ±0.6 s` | Synced a long time ago; the possible error has grown. Sync again. |
-| Red, `Not synced · iPad clock` | No sync. Times come from the iPad's own clock and are labelled as such. |
+| Green, `Clock ±25 ms` | The clock was set by the site and is within that much of the site's time. |
+| Orange, `Clock ±400 ms` | Set over a slow connection, or long ago. Tap it to set it again. |
+| Orange, `iPad's own clock` | The site could not be reached. Times come from the iPad's clock and are marked as such. |
 
-Tap the badge for details and a **Sync now** button. The app syncs by itself
-when it starts and every few minutes after that.
+Tap the badge to set the clock again and see the details. The page sets it by
+itself when it opens, every five minutes, and whenever the iPad comes back
+from sleep or the connection returns.
 
-**No internet at the venue?** Sync before you leave, on Wi-Fi. The sync is kept
-while the iPad sleeps and while the app is closed, and is only lost if the iPad
-is restarted. It slowly loses accuracy (the app assumes up to 72 ms per hour and
-shows it), so sync as late as you can. If a race does get recorded without a
-sync, sync afterwards **before restarting the iPad** and use *Race setup →
-Correct them from the time server*: the exact times are worked out
-retrospectively.
+**Poor signal at the venue?** The clock only needs the connection now and
+then. If results do get timed by the iPad's own clock, the page offers to
+**correct them** in one go as soon as it has reached the site again: it knows
+how far the iPad's clock is from the site's and shifts those results by that
+much.
 
-### 4. Optional: start list and start time
+### Record
 
-Under **⋯ → Race setup**:
+Tap **Record** when the first runner is near. From now on every bib the camera
+reads is added to the list with its time. Each bib is recorded once (for races
+with laps, change that in Settings).
 
-- **Start list.** Paste or import a list with one runner per line, bib number
-  first (`101, Jane Doe`). Names then appear in the results, and with *Only
-  record bibs on the list* switched on the camera ignores every other number it
-  sees. This is the single most effective way to keep stray numbers out.
-- **Start time.** Tap **Start** on the timing screen at the gun, or type a
-  start time in Race setup. Results then show elapsed time as well as time of
-  day.
-
-### 5. Record
-
-Tap **Record**. From now on every bib the camera reads is added to the results
-with its time. Each bib is recorded once (for races with laps, change this in
-Settings).
-
-- **Mark** adds a result at this instant with no number. Use it for any runner
-  the camera is not going to read (bib covered, folded, missing) and fill in
-  the number afterwards.
+- **Mark** takes a time at this instant with no number, and keeps a photo of
+  the picture as it was. Use it for any runner the camera is not going to read
+  (bib covered, folded, missing) and fill in the number afterwards.
+- **Add now**, next to the count, takes a time at this instant for a number
+  you type.
 - Tap **Stop** when the race is over.
 
-Keep the app on screen while recording. The iPad is kept awake, and the Back
-button is hidden until you tap Stop, so the race cannot be left by accident.
+The badge next to the clock shows what has reached the site: **Sent**,
+**Sending 3**, or **No connection · 12 waiting**. Waiting results are kept on
+the iPad and go by themselves when the connection is back.
 
-### 6. Check and correct
+### Check and correct
 
-The results list shows the newest first. Tap a result to see its photo, correct
-the number or add a note; swipe left to delete it. Things to look for:
+The list shows the newest result first. Tap one to see its photo, correct the
+number or the time, add a note, or delete it. Things to look for:
 
 - **`?`** : a mark that still needs its number.
-- **estimated** : the bib was only read on one side of the line (it was hidden
-  as it crossed), so the nearest sighting was used. Usually within a second.
-- **duplicate** : two results have the same number; one of them is a misread.
-- **iPad clock** : recorded without a sync.
+- **by hand** : taken with Mark or Add now, not read by the camera.
+- **estimated** : the bib was only read on one side of the line, so the
+  nearest reading was used. Usually within a second.
+- **more than once** : two results have the same number; one of them is a
+  misread or a second pass.
+- **read as 117** : the number was corrected by hand; this is what the camera
+  read.
+- **iPad clock** : timed without the site's clock.
 
-### 7. Export
+Under **Race**:
 
-Tap the share button. Choose **Bib and time** or **All details**, then share or
-save the CSV file, or copy it as text to paste into a spreadsheet.
+- **Start time.** Tap **The race starts now** at the gun, or type the time of
+  day. Results then show the time since the start as well. Without a start
+  time, results carry the time of day, which is all a scoring program needs.
+  With several iPads, set it on one: the site passes it to the results page.
+- **Start list.** Paste one runner per line, bib number first
+  (`101, Jane Doe`); copying two columns out of a spreadsheet works. Names then
+  appear in the list, and with *Only record numbers that are on this list* the
+  camera ignores every other number it sees. This is the single most effective
+  way to keep stray numbers out.
+- **Download CSV** gives this iPad's results as a file, straight from the
+  iPad.
 
-## Several iPads
+### If the page goes away
 
-Each iPad syncs to NTP separately, so they all keep the same time of day.
+Safari sometimes reloads a page, most often after the iPad has been used for
+something else. The page is built to come back as it was:
 
-- Give each one a **station name** in Settings (*Start*, *5 km*, *Finish A*).
-  It is written into the detailed export.
-- Take the **start time** on one iPad and type it into the others (Race setup),
-  or leave it unset and work from time of day.
-- Two iPads on the same finish line, at different angles, catch bibs that one
-  alone would miss. Export both and combine the files by bib number in a
-  spreadsheet, keeping the earlier time for each bib. Or let the results hub
-  described next do the combining for you.
+- The race, its results and the settings are kept on the iPad and are there
+  again.
+- If it was recording, **recording is switched on again**, and a message says
+  from when to when nothing was read.
+- It opens **without a connection** too, from the copy kept on the iPad.
 
-## Live results on your scoring computer
+Results are also on the site as soon as they are sent. After the race,
+download the CSV files from the results page: Safari may clear what a site has
+kept on an iPad if the site is not visited for some weeks.
 
-This part is optional. Without it, results leave an iPad by export (step 7
-above). With it, every iPad copies its results to a small website, the *hub*,
-as they are recorded, and the scoring computer reads them from there.
+## 3. On the scoring computer
 
-```
-iPad (Start)   ─┐
-iPad (Finish A) ─┼─ upload ─▶  hub (a website you run)  ─▶  scoring computer
-iPad (Finish B) ─┘                                           live page or CSV
-```
+Open your address (without `/capture/`) in any browser and enter the key.
 
-**The race does not depend on the connection.** Each iPad saves every result on
-itself first and uploads afterwards. If the signal drops, uploads simply resume
-when it returns; nothing is lost and no time changes. Exporting from the iPad
-keeps working whatever happens to the hub.
-
-The hub is the `hub` folder of this repository: one small Node program with no
-other parts. It runs on any host that can run a Docker image. These steps use
-[Railway](https://railway.com); its menus change from time to time, so a name
-may differ slightly from what is written here.
-
-### 1. Put the hub on Railway
-
-1. In Railway, create a **New Project**, choose **Deploy from GitHub repo** and
-   pick this repository. Railway builds the hub from the `Dockerfile` in the
-   repository; there is nothing to configure for the build.
-2. Open the new service's **Variables** and add `HUB_KEY`. Make it a long
-   phrase nobody would guess (at least 8 characters; 20 or more is better).
-   This is the access key: anyone who has it can see and change the results.
-3. In the service's **Settings**, under networking, **generate a domain**. You
-   get an address like `https://something.up.railway.app`. If Railway asks
-   which port the app listens on, it is the number in the hub's log line
-   `[hub] listening on port …` (normally 8080).
-4. Recommended: add a **Volume** to the service, mounted at `/data`. Results
-   are then kept across restarts. Without one the hub starts empty after every
-   restart, and the iPads fill it again by themselves the next time the app is
-   open and online.
-5. Open the address in a browser on the scoring computer and enter the key.
-   The page says no results have arrived yet.
-
-A second variable, `HUB_VIEW_KEY`, is optional: a key that can look at results
-but not change them, for an announcer or a results screen.
-
-### 2. Point the iPads at it
-
-On every iPad:
-
-1. **Settings → Live results**: enter the address and the access key, then tap
-   **Connect**. The iPad starts using them once the hub has answered and
-   accepted the key; until then nothing changes, so a mistyped address or key
-   cannot interrupt uploads that already work.
-2. **Settings → Station name**: give each iPad its own (*Start*, *Finish A*).
-3. **⋯ → Race setup → Live results**: check the **event code**. Every iPad at
-   the event must show the same one, because that is how their results are
-   combined. iPads on which the race was created with the same name on the same
-   day already agree; otherwise edit the code on one of them to match. (A
-   second race with the same name on the same iPad and day gets a code ending
-   in `-2`, so that it can never overwrite the first.)
-
-A badge next to the clock badge shows the state: **Shared** (everything is on
-the hub), **Sending 3** (three results still to go) or **Not sent yet** (no
-connection at the moment; it keeps trying).
-
-### 3. On the scoring computer
-
-The hub's page lists the results of all iPads in order, updating every couple
-of seconds. You can hide a station, show one row per bib (the earliest, useful
-with two iPads on the same line), and download the CSV. Each station shows when
-it was last heard from; an iPad checks in every 45 seconds even when nothing is
-happening, so a station that has been silent for a few minutes has lost its
-connection or its app has been closed.
+The page lists the results of all iPads in order, updating every couple of
+seconds. You can hide an iPad, show one row per bib (the earliest, useful with
+two iPads on the same line), and download the CSV. Each iPad shows when it was
+last heard from; an iPad checks in every 45 seconds even when nothing is
+happening, so one that has been silent for a few minutes has lost its
+connection or its page has been closed.
 
 **Each iPad on its own.** Every iPad has a **CSV** button of its own on the
 page, which downloads just that iPad's results, whatever else is ticked. The
-file is named after the event and the iPad (`spring-run-20261128-finish-a.csv`).
+file is named after the race and the iPad (`spring-run-20261128-finish-a.csv`).
 The big **Download CSV** and **Copy CSV link** buttons cover the iPads that are
 ticked, so unticking all but one gives that iPad's detailed file or link too.
 All of this works while the race is still being recorded: a download is the
-results as they stand at that moment. Give the iPads different station names
+results as they stand at that moment. Give the iPads different names
 (*Finish A*, *Finish B*); if two have the same name, the page calls the second
 one *Finish (2)* so that they can still be told apart.
 
@@ -286,8 +313,11 @@ To fetch the results from scoring software or a script instead, use the direct
 address (the page's **Copy CSV link** button builds it for you):
 
 ```
-https://YOUR-ADDRESS/api/events/EVENT-CODE/results.csv?key=YOUR-KEY
+https://YOUR-ADDRESS/api/events/RACE-CODE/results.csv?key=YOUR-KEY
 ```
+
+The race code is the race's name and date in lower case
+(`spring-run-20261128`); the camera page shows it under **Race**.
 
 | Add to the address | Effect |
 | --- | --- |
@@ -300,11 +330,15 @@ The same address ending in `results.json` gives everything as JSON. The key can
 also be sent as an `Authorization: Bearer YOUR-KEY` header, which keeps it out
 of the address.
 
-`elapsed` is measured from the start time set on an iPad (tap **Start**, or set
-it in Race setup). If more than one iPad has a start time, the one set most
-recently is used, and the page shows which iPad it came from.
+`elapsed` is measured from the start time set on an iPad. If more than one iPad
+has a start time, the one set most recently is used, and the page shows which
+iPad it came from.
 
-### Sending results straight into RunScore
+To clear away a practice run, use **Remove event** on the results page. An
+iPad that still has that race open sends it again, so delete the results on
+the iPad too (**Race → Delete all results of this race**) or start a new race.
+
+## Sending results straight into RunScore
 
 [RunScore](https://runscore.com) can take results over a TCP connection, one
 line of text per result, in its open format:
@@ -317,11 +351,11 @@ That is the marker for a bib number, the bib, the time of day and the name of
 the timing point. RunScore listens for that connection on the scoring computer
 itself, and a website cannot reach into your computer. So the last step is
 done by a small program that runs on the scoring computer: it fetches each new
-result from the hub and hands it to RunScore.
+result from the site and hands it to RunScore.
 
 ```
-iPads ── upload ─▶ hub ◀─ fetches ── connector ── TCP ─▶ RunScore
-                 (Railway)          └──── on the scoring computer ────┘
+iPads ── upload ─▶ site ◀─ fetches ── connector ── TCP ─▶ RunScore
+                 (Railway)           └──── on the scoring computer ────┘
 ```
 
 The connector runs in Windows PowerShell, which every Windows computer has.
@@ -333,7 +367,7 @@ There is nothing to install.
    Timer*, which has a TCP box and a port; that has not been checked against
    RunScore itself. What matters is that RunScore listens on a TCP port for
    lines that begin with `RSBI`.
-2. **On the hub's page**, open **Send results to RunScore**, enter the port,
+2. **On the results page**, open **Send results to RunScore**, enter the port,
    and press **Copy the line**. The line contains the key you opened the page
    with; if you set a view key (`HUB_VIEW_KEY`), open the page with that one
    first, since reading is all the connector needs.
@@ -379,17 +413,17 @@ How it behaves:
   chip mat. To feed two separate inputs in RunScore, tick one iPad at a time
   on the page and make a line for each port. Run one connector per port, not
   two into the same one.
-- **An iPad that is not synced.** Its results are passed on all the same, and
-  the window warns, once, that its times come from the iPad's own clock.
+- **An iPad whose clock is not set.** Its results are passed on all the same,
+  and the window warns, once, that its times come from the iPad's own clock.
 - **A click in the window.** In the classic Windows console a click selects
   text, and Windows then holds the program up until Enter is pressed. The
   connector switches that off for its window. Should the window ever seem
   stuck all the same, click in it and press Enter; nothing is lost meanwhile.
-- **Data.** The connector asks the hub to hold each request until there is a
+- **Data.** The connector asks the site to hold each request until there is a
   result, so it uses little: about 0.14 MB an hour when nothing is happening
   and under 1 KB per result, which comes to about 0.3 MB for a two-hour race
-  with 150 results and 0.8 MB with 1,000 (measured the same way as the
-  figures for the iPads below).
+  with 150 results and 0.8 MB with 1,000 (measured by counting every byte on
+  an encrypted connection, as for the iPads below).
 
 Things that can be added to the end of the line:
 
@@ -418,180 +452,245 @@ If the connection cannot be used on the day at all, **Download as a RunScore
 file** on the same panel gives the results as they stand as a text file of the
 same lines, and the CSV downloads work as always.
 
-### What is sent, and keeping it private
+## How many runners will it catch?
 
-Sent: bib numbers, times, how each time was taken, the station name, the race
-name and your notes. Not sent: photos, and the names on the start list.
+Nobody can say before you have tried it on your iPads, and this page has not
+been run on a real one. What can be said:
 
-Everything travels over HTTPS, and nothing can be read or written without the
-key. Treat the key, and any link that contains it, like a password. To change
-it, change `HUB_KEY` on Railway and enter the new one on the iPads.
+**It reads less often than the app does.** The camera page looks at the
+picture a few times a second; the number is shown at the top of the picture
+(*Reading · 3.2 looks a second*). On the computer it was developed on, a look
+at a full picture with a few bibs in it takes 0.4 to 0.6 seconds. Recent iPads
+should be faster than that and old ones slower; that is a guess from their
+processors, not a measurement.
 
-### How much mobile data it uses
+**What a bib needs** in order to be recorded: to be readable in two looks (so
+that one stray reading is not believed), and for an exact time, in one look
+before the line and one after. At three looks a second, that is a bib that
+stays readable, facing the camera, for about a second around the line. A
+runner alone gets that. In a tight bunch, the ones hidden behind others do
+not.
 
-Very little. Only numbers and times are sent, never video or photos. These
-figures were measured by playing a simulated race into the real hub over an
-encrypted connection, with a program standing in for the iPad and sending what
-the app sends, and counting every byte in both directions. They are for **one
-iPad with the app open for two hours**:
+**In the tests**, with drawn runners moving steadily down a drawn picture and
+never hiding one another, every bib was recorded and none wrongly. That shows
+that the chain works, not what a real finish gives. Expect a real finish to be
+well below that, and a packed one to be the hardest case. As a planning
+figure, assume the page misses more than the app would, and that someone has
+to catch the misses with **Mark**.
+
+**What raises it**, most effective first:
+
+1. **Make the search area small** and the bibs large in it. Both make every
+   look quicker and surer.
+2. **Mount the iPad high**, looking down the line of runners, so that they
+   hide one another less.
+3. **Two iPads on the same line**, from different sides. Each catches bibs the
+   other misses, and the results page shows one row per bib if asked.
+4. **A start list**, with *Only record numbers that are on this list*. It does
+   not find more bibs, but it turns misreads into nothing instead of into
+   wrong results.
+5. **Settings → How closely each picture is searched → Quick**, if the bibs
+   are large in the picture. *Thorough* finds smaller bibs and looks less
+   often.
+6. **Settings → For fine-tuning → Processor cores**: try 2 (or 4 on an iPad
+   with an M-series chip) and keep it if the looks a second go up. Left to
+   itself the page uses one core on an iPad, because reading with several
+   needs something that Safari has been reported to refuse on some versions of
+   iPadOS. If it does not work, the page goes back to one core by itself.
+7. **Settings → Readings before a number is believed → 1** catches runners
+   that are only readable for an instant, at the price of more misreads. Use it
+   only together with a start list.
+
+What stays hard whatever is set: a bib covered by an arm, folded, pinned at
+the side, in deep shadow, or hidden behind another runner. Any other number in
+view is a candidate too (a year on a banner, a race clock, a number plate);
+the search area, the digit and range settings and a start list deal with those.
+
+## How accurate are the times?
+
+**The clock.** A page in a browser cannot ask a time server itself, so each
+iPad asks the site, in the way a time server is asked: several times over, and
+it keeps the answer that spent the least time on the way. Half of that time is
+how far off the result can be, and that is the figure on the badge: typically
+10 to 50 ms on a good connection, more on a poor one. The site in turn checks
+its own clock against four time servers and takes the answer most agree on.
+If the hosting service does not let it ask them, the page says so when you tap
+the badge; a hosting service's clock is normally right to a few thousandths of
+a second anyway. All iPads take their time from the same site, so they agree
+with one another to within their badges.
+
+**The moment.** Each picture is stamped with the moment it was taken, not the
+moment the reading finished, so slow reading does not delay a time. With the
+finish line, the time is worked out between the readings on either side of the
+crossing, assuming the runner moved steadily between them. In the tests, where
+runners do move steadily, that came out within a hundredth of a second. Real
+runners at a few looks a second: expect one or two tenths. Results marked
+*estimated* can be off by a second or so.
+
+**The camera's delay.** A picture takes a moment to get from the lens to the
+page, and Safari does not say how long. The page takes off 60 ms, a typical
+figure; the true one for your iPad may differ by a few hundredths, the same
+for every runner. It can be changed under Settings → For fine-tuning.
+
+## How much mobile data it uses
+
+Very little once the page is loaded. Only numbers and times are sent, never
+video or photos. These figures were measured with the real page in a desktop
+browser, over an encrypted connection of the kind a hosting service provides,
+counting every byte in both directions:
+
+| What | Data |
+| --- | --- |
+| Opening the page for the first time on an iPad | about 15 MB, once. Do it on Wi-Fi. |
+| Opening it again later | about 15 KB, plus what follows |
+| One result | about 0.6 KB |
+| Saying "still here" every 45 seconds | about 0.5 KB each: 42 KB an hour |
+| Setting the clock every five minutes | about 1.4 KB each: 17 KB an hour |
+| Sending a race again after the page was reloaded | about 0.2 KB per result |
+
+For **one iPad with the page open for two hours** that comes to:
 
 | Results recorded on that iPad | Data used by that iPad |
 | --- | --- |
-| 150 | about 0.3 MB |
-| 300 | about 0.4 MB |
-| 600 | about 0.6 MB |
-| 1,000 | about 0.9 MB |
-| 2,000 | about 1.5 MB |
+| 150 | about 0.2 MB |
+| 300 | about 0.3 MB |
+| 600 | about 0.5 MB |
+| 1,000 | about 0.7 MB |
+| 2,000 | about 1.3 MB |
 
-So a whole race on three iPads is a megabyte or two: about what a single web
-page with pictures uses.
+- These are the figures when the connection to the site stays open between
+  uploads, which checking in every 45 seconds is there to achieve. On a poor
+  signal the iPad has to connect afresh, which costs a few KB each time.
+- Tap the **Sent** badge to see roughly how much the page has sent since it
+  was opened.
+- A new version of the camera page is a few hundred KB. The 15 MB reading
+  program is only fetched again if it changes itself, which is rare.
 
-- These are the figures when the connection to the hub stays open between
-  uploads. The app keeps it open by checking in every 45 seconds. On a poor
-  signal the iPad has to reconnect, which costs more: in the worst case, a new
-  connection for every single upload, about five times as much (1.5 MB for 150
-  results, 7 MB for 2,000).
-- What the pieces cost: a result is about 170 bytes, and the upload that
-  carries it just under 1 KB (results that arrive together share one upload).
-  A check-in with nothing new is just under 1 KB. Reopening the app during a
-  race sends that race again in one go: about 85 KB for 500 results.
-- The time sync adds roughly 30 KB an hour (worked out from the size of the
-  packets, not measured).
-- **Race setup → Live results** shows an estimate of what the iPad's uploads
-  have used since the app was opened, so after a dry run you can see the figure
-  for your own set-up. It does not count reconnecting.
-
-On the **scoring computer**, opening the live page with 400 results already in
-takes about 27 KB. After that the page only fetches what is new: at most about
-1 MB an hour while it stays open, and well under 1 KB per result. Downloading
-the CSV file of 460 results takes 4 KB.
+On the **scoring computer**, opening the results page with 400 results already
+in takes about 27 KB. After that the page only fetches what is new: at most
+about 1 MB an hour while it stays open, and well under 1 KB per result.
+Downloading the CSV file of 460 results takes 4 KB.
 
 iPadOS itself can use far more data than all of this, for example by syncing
 photos or downloading updates. To stop that on race day, switch on **Low Data
 Mode** for the connection the iPads use (*Settings → Cellular → Cellular Data
-Options*, or for a hotspot *Settings → Wi-Fi →* ⓘ next to its name). It pauses
-the system's own background downloads. Bib Timer does not opt out of working in
-Low Data Mode, so its uploads and time sync should carry on; check that in
-your dry run.
+Options*, or for a hotspot *Settings → Wi-Fi →* ⓘ next to its name).
 
-### Running the hub somewhere else
+## What is sent, and keeping it private
 
-```
-cd hub
-HUB_KEY=your-long-key node server.js
-```
+Sent to the site: bib numbers, times, how each time was taken, the name of the
+iPad's place, the race name and your notes. Not sent: video, photos, and the
+names on the start list. Those never leave the iPad.
 
-It needs Node 20 or later and nothing else, listens on `PORT` (8080 unless
-set), and keeps its copy of the results in `DATA_DIR` (`hub/data` unless set).
-The iPads only talk to it over HTTPS, so put it behind something that provides
-that.
+Everything travels over HTTPS, and nothing can be read or written without the
+key. Treat the key, and any link that contains it, like a password. To change
+it, change `HUB_KEY` on Railway; each iPad then asks for the new one.
 
-## How accurate is it?
+The camera page loads nothing from anywhere but your own site.
 
-**The clock.** On Wi-Fi a sync is usually good to 10–50 ms and the app shows the
-actual figure. The figure is a worst case: half the network round trip plus the
-server's own stated error. Several servers are asked and one that disagrees with
-the rest is ignored.
+## The files
 
-**The moment.** Every video frame is stamped when the camera captures it, not
-when the reading finishes, so slow scanning does not delay a time. With the
-finish line, the time is interpolated between the two frames either side of the
-crossing. Expect around ±0.1 s when the bib is read on both sides of the line.
-Results marked *estimated* can be off by a second or so.
+Times of day are in the iPads' time zone. Rows are in finishing order.
 
-**The reading.** This is the weak point of any camera system, and no setting
-makes it perfect.
-
-- A bib that is covered by an arm, folded, pinned at the side, very small in the
-  picture, in deep shadow or hidden behind another runner will be missed.
-  Packed finishes are the hardest case.
-- A number can be misread, most often with a digit missing. The app follows
-  each bib across frames and takes the reading most frames agree on, which
-  removes most of these, but not all.
-- Any other number in view is a candidate: a year on a banner, a race clock, a
-  car number plate. The scan zone, the digit and range settings and above all a
-  start list deal with these.
-
-Use the Mark button as a backup, review the photos afterwards, and for results
-that matter run a second timing method alongside.
-
-## The exported file
-
-Times of day are in the iPad's time zone. Rows are in finishing order.
-
-**Bib and time**
+**The plain file** (`Download CSV`):
 
 ```
-bib,time_of_day,elapsed
-7,09:53:52.500,0:23:52.500
-12,09:55:00.250,0:25:00.250
+bib,time_of_day,elapsed,station
+7,09:53:52.500,0:23:52.500,Finish A
+12,09:55:00.250,0:25:00.250,Finish A
 ```
 
 `elapsed` is empty if the race has no start time.
 
-**All details** adds these columns:
+**With all details** the columns are:
 
 | Column | Meaning |
 | --- | --- |
-| `position` | Finishing position at this station. |
-| `name` | From the start list. |
+| `position` | Finishing position among the rows in the file. |
+| `bib`, `time_of_day`, `elapsed` | As above. |
 | `utc` | The time as a UTC timestamp, e.g. `2026-11-25T14:53:52.500Z`. |
 | `timing` | `line` (crossed the finish line), `estimated`, `firstSeen`, `lastSeen` or `manual`. |
 | `source` | `camera` or `manual`. |
-| `confidence` | The text recognizer's confidence, 0–1. |
-| `sightings` | Number of frames in which the bib was read. |
-| `clock` | `ntp` or `device` (the iPad's own clock). |
-| `clock_error_ms` | Worst-case clock error when the time was taken. |
-| `detected_bib` | What the camera read, if you corrected the number. |
-| `station` | This iPad's station name. |
+| `confidence` | How sure the reader was when the result was recorded, 0–1. |
+| `clock` | `ntp` (the site's clock, or a time server in the app) or `device` (the iPad's own clock). |
+| `clock_error_ms` | How far off the clock could have been when the time was taken. |
+| `station` | The name of the iPad's place. |
 | `note` | Your note. |
 
-## Settings
+For RunScore there is also a text file of `RSBI` lines (**Download as a
+RunScore file** on the results page).
+
+## Settings on the camera page
 
 | Setting | What it does |
 | --- | --- |
-| Station name | Identifies this iPad in exports. |
-| Time is taken | At the finish line (default), when first read, or when last read. |
-| Record a bib more than once | For laps. With a minimum time between crossings of the same bib. |
-| Digits, lowest and highest number | What counts as a bib number. Match these to your race. |
-| Never record | Numbers to ignore, e.g. the year printed on every bib. |
-| Read in N frames before it counts | Higher is stricter: fewer false readings, more missed bibs. |
-| Certainty required | How sure the recognizer must be. |
-| Smallest text | Smaller reaches further away but slows scanning. |
-| Accept a look-alike letter | Reads `1O4` as `104`. |
-| Keep a photo of each result | For checking afterwards. |
-| Outline rejected text | Shows text that was read but did not count as a bib. Useful when setting up. |
-| 4K video | Records more detail. Lower *Smallest text* as well to read bibs further away; scans get slower. |
-| Longest exposure | A short exposure keeps moving bibs sharp. Use a longer one or Automatic in poor light. |
-| Scans per second | Fewer keeps the iPad cooler over a long day. |
-| NTP time servers | Default: `time.apple.com`, `time.cloudflare.com`, `pool.ntp.org`. A server on your own network can be used too. |
-| Live results | Address and access key of your results hub, if you run one. See [Live results](#live-results-on-your-scoring-computer). |
+| Moment | A time is taken when the bib crosses the line (default), when it is first read, or when it is last read. |
+| Readings before a number is believed | Higher is stricter: fewer misreads, more missed bibs. Default 2. |
+| Record a bib each time it comes past | For laps, with a shortest time between two passes of the same bib. |
+| Fewest and most digits, lowest and highest number | What counts as a bib number. Match these to your race. |
+| Numbers that are never bibs here | Numbers to ignore, e.g. the year printed on every bib. |
+| Smallest numbers to read | Larger skips distant runners and small print, and is a little quicker. |
+| Read a look-alike letter as its digit | Reads `1O4` as `104`. |
+| Lens, Zoom | Which of the iPad's cameras, and how far it is zoomed in, where Safari offers the choice. |
+| How closely each picture is searched | *Quick*, *Standard* or *Thorough*: more looks a second, or smaller bibs found. |
+| Keep a small photo with each result | For checking afterwards. Photos stay on the iPad. |
+| Processor cores used for reading | See [How many runners will it catch?](#how-many-runners-will-it-catch) |
+| Camera delay | See [How accurate are the times?](#how-accurate-are-the-times) |
 
 ## If something is not working
 
-- **No outlines on bibs.** Move closer or zoom in; check the bib is inside the
-  scan zone; switch on *Outline rejected text* to see what is being read. Try
-  a lower *Smallest text*, with 4K video for bibs that are far away.
-- **Bibs are outlined but nothing is recorded.** Press Record. If a start list
-  is in use, the bib must be on it. Check the digit and number range settings.
+**On an iPad**
+
+- **"This browser is too old to read bibs."** The page needs iPadOS 16.5 or
+  later. Update the iPad (Settings → General → Software Update).
+- **"The results site is missing its bib reader."** The site was built without
+  the reading program. Deploy it again from this repository with the
+  `Dockerfile` it comes with.
+- **The camera does not start.** Safari was not allowed to use it: tap the
+  icon at the left of the address bar, **Website Settings**, **Camera →
+  Allow**, then **Start the camera**. If another app is using the camera,
+  close it.
+- **"Fetching the bib reader" stays at one figure.** The connection is slow or
+  gone; about 15 MB has to arrive the first time. It carries on where it can.
+- **"Bib reader not working" or "Bib reader off".** The reading program did
+  not start on this iPad. Tap the button on the message to try again. Times
+  can be taken with **Mark** meanwhile. If it never starts, the iPad may be too old or too
+  short of memory: close other apps and tabs, restart Safari, and set *How
+  closely each picture is searched* to *Quick*.
+- **No boxes on bibs.** Move closer or zoom in; check that the bib is inside
+  the search area and that *Fewest and most digits* fit your numbers. Try
+  *Thorough*.
+- **Boxes on bibs, but nothing is recorded.** Tap Record. If *Only record
+  numbers that are on this list* is on, the bib must be on the list.
 - **Times are all marked estimated.** Bibs are not being read on both sides of
   the line. Move the line further up the picture, to where bibs are still
-  comfortably readable.
-- **Bibs blur as runners pass.** Choose a shorter *Longest exposure*.
-- **The clock will not sync.** NTP uses UDP port 123, which some guest and
-  corporate Wi-Fi networks block. Try a phone hotspot.
-- **The iPad gets hot and slow.** Lower *Scans per second*, keep it out of
-  direct sun, and take it out of its case.
-- **The badge says "Not sent yet".** The iPad cannot reach the results hub at
-  the moment. Results are safe on the iPad and are sent when the connection
-  returns. If it never clears, use *Check the connection* in Settings: it says
-  whether the address or the key is the problem. When the hub turns an upload
-  down (a changed key, for example), the iPad tries again only every few
-  minutes, to save data; a successful *Check the connection* makes it try at
-  once.
-- **A new hub address or key is not being used.** It only comes into use when
-  **Connect** in Settings has succeeded. The message under the button says what
-  went wrong.
+  comfortably readable, and make sure the arrow points the way runners go.
+- **Few looks a second.** Make the search area smaller, choose *Quick*, keep
+  the iPad cool and on power, switch Low Power Mode off, and try 2 cores.
+- **The page says it was not in front, or was loaded again.** Something else
+  was on screen, or Safari reloaded the page. Nothing was read in the time
+  shown; take those runners from your backup. Guided Access keeps the page in
+  front.
+- **The badge says "iPad's own clock".** The site cannot be reached. Results
+  are timed by the iPad and marked; when the connection is back the page
+  offers to correct them.
+- **The badge says "No connection".** Results are safe on the iPad and are
+  sent when the connection returns.
+- **The badge says "Not accepted".** The site refused the upload, most likely
+  because the key was changed. Settings → **Forget the access key**, then
+  enter the new one. Results stay on the iPad meanwhile.
+- **"This page is already open."** It is open in another tab on this iPad.
+  Close one of them.
+- **The iPad gets hot and slow.** Keep it out of direct sun and out of its
+  case; make the search area smaller.
+
+**On the scoring computer**
+
+- **The page shows two races for one race.** The iPads were given different
+  race names, or set up on different days. On the iPad that is wrong, tap
+  **Race → Another race…** and pick the right one from the list.
+- **An iPad is listed twice.** It was given a new name during the race, or its
+  Safari data was cleared, which makes it a new iPad to the site. Tick both.
 - **The connector says "Waiting for RunScore to listen".** Nothing accepts a
   connection on that port. Check that RunScore's TCP input is started and that
   the port in the line is the one set in RunScore. Results recorded meanwhile
@@ -601,57 +700,112 @@ bib,time_of_day,elapsed
   what RunScore expects: the marker (`-Prefix`), the line ending
   (`-LineEnding`), time of day or elapsed (`-Time`) and the timing-point name
   (`-Location`).
-- **The hub page shows two events for one race.** The iPads are using different
-  event codes. Make them the same in Race setup; the iPad then sends its
-  results under the new code. Clear away the stray one, and anything left from
-  a practice run, with **Remove event** on the hub page.
+
+## What has been tested
+
+So that you know what you are relying on:
+
+- **Tested automatically, on every change:** the timing logic (which numbers
+  are bibs, following them, the moment of crossing, once per bib); the clock
+  arithmetic; what is sent to the site and when; the site itself; the RunScore
+  connector on Windows, against a stand-in for RunScore.
+- **Tested automatically in real browsers** (Chromium, and WebKit, the engine
+  of Safari, on a Mac, also made up to look like an iPad): the camera page
+  from signing in to results on the site, with drawn runners in place of a
+  camera; correcting results; the settings; reloading while recording; working
+  and reloading without a connection; two iPads at one race; falling back when
+  the quicker reading program is refused.
+- **Not tested:** anything on a real iPad. In particular how fast and how well
+  it reads real bibs, how Safari on an iPad treats the camera and a page that
+  is open for hours, and how warm the iPad gets. And nothing has been tried
+  against RunScore itself.
 
 ## For developers
 
 ```
-BibTimer.swiftpm/        the app (a Swift Playgrounds app project)
-  Core/                  platform-independent logic: NTP packets and clock
-                         maths, bib rules, tracking, results, CSV export,
-                         and what is sent to the hub
-  Time/                  NTP client (Network.framework) and sync service
-  Recognition/           Vision text recognition
-  Capture/               camera and the frame-analysis pipeline
-  Storage/               races on disk
-  Sync/                  uploading results to the hub
-  UI/                    SwiftUI screens
-Package.swift            test/CI manifest: the same sources as a library
-Tests/                   unit tests for the app
-hub/                     the results hub (Node, no dependencies) and its tests
-  public/runscore.ps1    the connector that passes results on to RunScore
-Dockerfile               builds the hub, for Railway or any container host
+hub/                     the site (Node)
+  server.js, lib/        the server: results store, RunScore feed, clock check
+  public/                the results page and the RunScore connector
+  public/capture/        the camera page
+    lib/                 timing logic shared with the tests: bib rules,
+                         tracking, results, clock arithmetic, upload planning
+    engine.js            finds and reads text with the two models
+    ocr-worker.js        runs the engine away from the page
+    capture.js ...       camera, overlay, storage, uploads, the page itself
+    sw.js                keeps a copy of the page on the iPad
+  scripts/vendor.mjs     copies the reading program out of npm packages
+  test/                  tests run by "node --test"
+  e2e/                   the camera page driven in a browser
+BibTimer.swiftpm/        the iPad app (a Swift Playgrounds app project)
+Package.swift, Tests/    the app's sources as a library, and its tests
+Dockerfile               builds the site, for Railway or any container host
+docs/ipad-app.md         the app's own instructions
 ```
 
-The root `Package.swift` compiles everything in `BibTimer.swiftpm` except the
-app entry point as a library, so the tests run with `swift test`. On Linux that
-covers the core logic, checks the NTP packet code against public time servers,
-and drives the app's upload client against a running hub. On macOS it also runs
-the real Vision recognizer against generated pictures and the real UDP client
-against a local time server. The hub has its own tests: `cd hub && node --test`.
-They include the RunScore connector, run by whichever PowerShell is installed
-against a real hub and a TCP server that stands in for RunScore (skipped where
-there is no PowerShell). CI (`.github/workflows/ci.yml`) runs all of these,
-runs the connector on Windows with both Windows PowerShell and PowerShell 7,
-builds the hub's Docker image, compiles all app sources for iOS and builds the
-app project.
+Running the site yourself:
 
-How a time is produced:
+```
+cd hub
+npm ci                    # fetches the reading program into public/vendor
+HUB_KEY=your-long-key node server.js
+```
 
-1. `NTPClient` exchanges a few packets with each server. `NTPSelection` picks
-   the offset most servers agree on. The result is a `ClockFix`: the difference
-   between the device's raw monotonic clock and UTC.
-2. `CameraController` delivers upright frames. `CapturePipeline` reads each
-   frame's capture timestamp, converts it to the monotonic clock, and runs
-   `TextRecognizer`.
-3. `BibFilter` keeps the text that looks like a bib number. `BibTracker` groups
-   readings into tracks, votes on the number, and interpolates the time at
-   which the track crosses the finish line.
-4. `RaceClock` converts that monotonic time to time of day with the current
-   fix. `CrossingLedger` applies the once-per-bib rule and `RaceStore` saves.
-5. If a hub is set up, `HubSync` uploads what changed since the last upload the
-   hub accepted (`HubPlanner` works that out) and sends everything again
-   whenever the hub's answer shows it holds something else.
+It needs Node 20 or later, listens on `PORT` (8080 unless set), and keeps its
+copy of the results in `DATA_DIR` (`hub/data` unless set). The server itself
+uses no packages; `npm ci` only fetches what the camera page reads numbers
+with. Without it the site still collects and shows results, and its camera
+page says that the reader is missing. Browsers only give a page the camera
+over HTTPS (or on `localhost`), so put the site behind something that provides
+that.
+
+How a time is produced on the camera page:
+
+1. `hub.js` asks the site for the time (`/api/time`) a few times and
+   `lib/timesync.js` keeps the answer that spent least time on the way: the
+   difference between the page's even-running clock and the site's. The site
+   checks its own clock by NTP (`lib/ntp.js` on the server).
+2. `camera.js` hands over each new picture with the moment it was taken.
+   `capture.js` cuts out the search area and sends it to `ocr-worker.js`, where
+   `engine.js` finds text (PP-OCR detection model) and reads it (recognition
+   model) with ONNX Runtime Web.
+3. `lib/bibfilter.js` keeps the text that looks like a bib number.
+   `lib/tracker.js` groups readings into tracks, votes on the number, and works
+   out when each track crosses the finish line. `session.js` turns that into
+   time of day; `lib/ledger.js` applies the once-per-bib rule.
+4. `storage.js` keeps races on the iPad. `hub.js` sends what has changed since
+   the last upload the site accepted (`lib/planner.js` works that out), and
+   everything again whenever the site's answer shows it holds something else.
+
+The reading program comes in two forms (`reader.js`). The quick one is ONNX
+Runtime Web 1.31 with several threads, which needs shared memory; its request
+for memory is lowered from 4 GB to 1 GB at install time. The plain one is ONNX
+Runtime Web 1.18, the last version built without shared memory, on one thread.
+iPads get the plain one unless told otherwise, and any browser falls back to
+it if the quick one fails to start.
+
+Tests:
+
+```
+cd hub
+npm ci
+node --test                          # the site, the logic, the connector (where PowerShell is installed)
+node e2e/capture.e2e.mjs             # the camera page in Chromium; needs Playwright
+node e2e/capture.e2e.mjs --browser=webkit --device=ipad
+swift test                           # the app's logic, from the repository root
+```
+
+CI (`.github/workflows/ci.yml`) runs all of these, the browser tests in
+Chromium and in WebKit on macOS, the connector on Windows with both Windows
+PowerShell and PowerShell 7, builds the Docker image and checks that it
+contains the reading program, compiles the app for iOS and builds the app
+project.
+
+### Other people's work
+
+The camera page reads numbers with [ONNX Runtime Web](https://github.com/microsoft/onnxruntime)
+(Microsoft, MIT License) and the PP-OCR text detection and recognition models
+from [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) (PaddlePaddle
+Authors, Apache License 2.0), taken as packaged for browsers in
+[paddleocr-browser](https://github.com/xulihang/paddleocr-browser) (xulihang,
+MIT License). None of it is in this repository: `npm ci` fetches it, and the
+site serves it together with a notice of these terms (`/vendor/NOTICE.txt`).

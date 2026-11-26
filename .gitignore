@@ -12,3 +12,6 @@ build/
 
 # macOS
 .DS_Store
+
+# Files for the capture page, copied out of node_modules by "npm install"
+hub/public/vendor/

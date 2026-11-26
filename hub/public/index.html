@@ -11,6 +11,7 @@
   <header class="bar">
     <h1>Bib Timer results</h1>
     <span id="status" class="status" hidden></span>
+    <a id="camera-page" class="link" href="/capture/" hidden>Camera page for the iPads</a>
     <button id="sign-out" class="quiet" type="button" hidden>Forget key</button>
   </header>
 
@@ -27,8 +28,15 @@
 
     <section id="waiting" class="card" hidden>
       <h2>No results yet</h2>
-      <p>An event appears here as soon as an iPad sends its first result. On each iPad, open
-        <strong>Settings → Live results</strong> and enter this site's address and the access key.</p>
+      <p>A race appears here as soon as an iPad has been set up for it.</p>
+      <p>On each iPad, open Safari and go to this site's address with <strong>/capture/</strong> at the end, or open
+        the link below. The page there turns the iPad into the camera at the finish line: nothing has to be
+        installed. It asks for the same access key once.</p>
+      <p><a class="link" href="/capture/">Open the camera page</a></p>
+      <div class="options">
+        <button class="copy-camera-link" type="button">Copy a link for the iPads</button>
+      </div>
+      <p id="camera-note" class="note" hidden></p>
     </section>
 
     <section id="board" hidden>
@@ -52,6 +60,7 @@
         <button id="download-simple" type="button">Download CSV</button>
         <button id="download-detailed" class="quiet" type="button">CSV with all details</button>
         <button id="copy-link" class="quiet" type="button">Copy CSV link</button>
+        <button class="copy-camera-link quiet" type="button" title="A link that opens the camera page on an iPad without the key having to be typed there">Copy a link for the iPads</button>
         <button id="remove-event" class="quiet danger" type="button">Remove event</button>
       </div>
       <p id="note" class="note" hidden></p>

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Bib Timer camera</title>
+  <link rel="stylesheet" href="capture.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Bib Timer</h1>
+    <span id="race-title" class="race-title"></span>
+    <button id="clock-chip" class="chip" type="button" hidden></button>
+    <button id="send-chip" class="chip" type="button" hidden></button>
+    <button id="open-race" class="quiet" type="button" hidden>Race</button>
+    <button id="open-settings" class="quiet" type="button" hidden>Settings</button>
+  </header>
+
+  <main>
+    <noscript>
+      <section class="card"><h2>This page needs JavaScript</h2><p>Turn JavaScript on for this site and reload.</p></section>
+    </noscript>
+
+    <section id="trouble" class="card" hidden>
+      <h2 id="trouble-title"></h2>
+      <p id="trouble-text"></p>
+      <button id="trouble-again" type="button">Try again</button>
+    </section>
+
+    <section id="sign-in" class="card" hidden>
+      <h2>Enter the access key</h2>
+      <p>The key that was set as <code>HUB_KEY</code> on the server. It is kept on this iPad, so it is only asked for once.</p>
+      <form id="key-form">
+        <input id="key-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Access key" required>
+        <button type="submit">Continue</button>
+      </form>
+      <p id="key-problem" class="problem" hidden></p>
+    </section>
+
+    <section id="setup" class="card" hidden>
+      <h2>Set up this iPad</h2>
+      <form id="setup-form" class="stack">
+        <label class="field">
+          <span>Race</span>
+          <select id="race-choice"></select>
+        </label>
+        <label class="field" id="race-name-field">
+          <span>Name of the race</span>
+          <input id="race-name" type="text" maxlength="80" autocomplete="off" placeholder="Turkey Trot">
+        </label>
+        <label class="field">
+          <span>Where this iPad stands</span>
+          <input id="station" type="text" maxlength="40" autocomplete="off" placeholder="Finish A">
+        </label>
+        <p id="setup-problem" class="problem" hidden></p>
+        <button type="submit">Open the camera</button>
+      </form>
+      <p class="note">Every iPad at a race sends its results to the same place on the results site. Give the race the same
+        name on each iPad, or set up the first one and choose that race from the list on the others. Give each iPad its
+        own place name: that is how their results are told apart.</p>
+      <ul class="notes">
+        <li>Stand the iPad where it sees runners from the front as they finish, as square-on as you can, and fix it so
+          that it cannot move.</li>
+        <li>Where runners cross the line, the numbers on their bibs should be at least about a fortieth of the height
+          of the picture. Move closer or zoom in if they are smaller.</li>
+        <li>Keep the iPad on power and out of direct sun, with this page open and in front.</li>
+        <li>Open this page on Wi-Fi the first time: it fetches about 15 MB once and keeps it on the iPad.</li>
+      </ul>
+    </section>
+
+    <section id="stage" class="stage" hidden>
+      <div id="view" class="view">
+        <video id="video" playsinline muted autoplay></video>
+        <canvas id="overlay"></canvas>
+        <div class="view-top">
+          <span id="reader-chip" class="badge"></span>
+          <span id="rec-chip" class="badge rec" hidden>Recording</span>
+        </div>
+        <div id="notices" class="notices"></div>
+        <div id="camera-off" class="camera-off" hidden>
+          <p id="camera-problem"></p>
+          <button id="camera-start" type="button">Start the camera</button>
+        </div>
+        <div class="view-tools">
+          <div id="main-tools" class="tools">
+            <button id="record" class="big" type="button">Record</button>
+            <button id="mark" class="big quiet" type="button" title="Take a time now, for a runner whose number cannot be read. The number is typed in afterwards.">Mark</button>
+            <button id="adjust" class="quiet" type="button">Finish line</button>
+          </div>
+          <div id="adjust-tools" class="tools" hidden>
+            <span class="hint">Drag the round ends to lay the line where runners finish; the arrow shows the way they run.
+              Drag the square corners to mark where bibs can be: a smaller area is searched faster.</span>
+            <button id="flip-line" class="quiet" type="button">Turn the arrow round</button>
+            <button id="reset-line" class="quiet" type="button">Reset</button>
+            <button id="adjust-done" type="button">Done</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="results" aria-label="Results">
+        <div class="results-head">
+          <div><strong id="count">0</strong> <span id="count-word">results</span></div>
+          <form id="add-form">
+            <input id="add-bib" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" placeholder="Bib" aria-label="Bib number to add at this moment">
+            <button type="submit" class="quiet">Add now</button>
+          </form>
+        </div>
+        <ol id="rows" class="rows"></ol>
+        <p id="no-results" class="empty">No results yet. Tap <strong>Record</strong> when the first runner is near.
+          Until then the picture shows what the camera can read: walk through with a bib to try it.</p>
+        <button id="show-all" class="quiet" type="button" hidden></button>
+      </aside>
+    </section>
+  </main>
+
+  <dialog id="edit-dialog">
+    <form id="edit-form" class="stack">
+      <h2 id="edit-title">Result</h2>
+      <img id="edit-photo" class="photo" alt="The picture in which this result was taken" hidden>
+      <label class="field">
+        <span>Bib number</span>
+        <input id="edit-bib" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Time of day</span>
+        <input id="edit-time" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="10:23:45.67">
+      </label>
+      <label class="field">
+        <span>Note</span>
+        <input id="edit-note" type="text" maxlength="200" autocomplete="off">
+      </label>
+      <p id="edit-facts" class="note"></p>
+      <p id="edit-problem" class="problem" hidden></p>
+      <div class="buttons">
+        <button id="edit-delete" class="quiet danger" type="button">Delete</button>
+        <span class="spacer"></span>
+        <button id="edit-cancel" class="quiet" type="button">Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="race-dialog">
+    <div class="stack">
+      <h2>Race</h2>
+      <label class="field">
+        <span>Name of the race</span>
+        <input id="race-name-edit" type="text" maxlength="80" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>Where this iPad stands</span>
+        <input id="station-edit" type="text" maxlength="40" autocomplete="off">
+      </label>
+      <p class="note">On the results site this race is <code id="race-code"></code>. Another iPad joins it by choosing it
+        from the list when it is set up.</p>
+
+      <fieldset>
+        <legend>Start time</legend>
+        <p id="start-shown" class="note"></p>
+        <div class="buttons">
+          <button id="start-now" type="button">The race starts now</button>
+          <input id="start-text" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="09:00:00" aria-label="Start time of day">
+          <button id="start-set" class="quiet" type="button">Set</button>
+          <button id="start-clear" class="quiet" type="button">Clear</button>
+        </div>
+        <p class="note">With a start time, each result also shows the time since the start. Without one, results carry
+          the time of day only, which is all a scoring program needs.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Start list</legend>
+        <p class="note">Optional. One runner per line: the bib number, then the name. Pasted from a spreadsheet works.</p>
+        <textarea id="roster-text" rows="4" spellcheck="false" autocomplete="off" placeholder="101, Ada Runner&#10;102, Ben Jogger"></textarea>
+        <p id="roster-count" class="note"></p>
+        <label class="check"><input id="roster-only" type="checkbox"> Only record numbers that are on this list</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Results on this iPad</legend>
+        <p id="device-clock" class="note" hidden></p>
+        <div class="buttons">
+          <button id="fix-times" type="button" hidden>Correct them</button>
+          <button id="csv-simple" class="quiet" type="button">Download CSV</button>
+          <button id="csv-detailed" class="quiet" type="button">CSV with all details</button>
+        </div>
+        <p id="data-used" class="note"></p>
+        <div class="buttons">
+          <button id="switch-race" class="quiet" type="button">Another race…</button>
+          <button id="clear-results" class="quiet danger" type="button">Delete all results of this race</button>
+        </div>
+      </fieldset>
+
+      <div class="buttons">
+        <span class="spacer"></span>
+        <button id="race-close" type="button">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <div class="stack">
+      <h2>Settings</h2>
+
+      <fieldset>
+        <legend>When a time is taken</legend>
+        <label class="field">
+          <span>Moment</span>
+          <select id="set-mode">
+            <option value="line">When the bib crosses the line drawn on the picture</option>
+            <option value="firstSeen">When the bib is first read</option>
+            <option value="lastSeen">When the bib is last read</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Readings before a number is believed</span>
+          <select id="set-sightings">
+            <option value="1">1 (catches the most, lets through more misreads)</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4 (fewest misreads, misses fast runners)</option>
+          </select>
+        </label>
+        <label class="check"><input id="set-repeats" type="checkbox"> Record a bib each time it comes past (laps)</label>
+        <label class="field" id="set-interval-field">
+          <span>Shortest time between two passes of one bib, in seconds</span>
+          <input id="set-interval" type="number" min="1" max="3600" step="1" inputmode="numeric">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>What counts as a bib number</legend>
+        <div class="pair">
+          <label class="field">
+            <span>Fewest digits</span>
+            <select id="set-min-digits"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+          </label>
+          <label class="field">
+            <span>Most digits</span>
+            <select id="set-max-digits"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+          </label>
+        </div>
+        <div class="pair">
+          <label class="field">
+            <span>Lowest number</span>
+            <input id="set-min-number" type="number" min="0" max="999999" step="1" inputmode="numeric" placeholder="any">
+          </label>
+          <label class="field">
+            <span>Highest number</span>
+            <input id="set-max-number" type="number" min="0" max="999999" step="1" inputmode="numeric" placeholder="any">
+          </label>
+        </div>
+        <label class="field">
+          <span>Numbers that are never bibs here (a year on a banner, say)</span>
+          <input id="set-ignored" type="text" autocomplete="off" spellcheck="false" placeholder="2026, 10">
+        </label>
+        <label class="field">
+          <span>Smallest numbers to read</span>
+          <select id="set-min-height">
+            <option value="0.01">Tiny (1% of the picture's height)</option>
+            <option value="0.015">Small (1.5%)</option>
+            <option value="0.025">Medium (2.5%): skips distant runners and small print</option>
+            <option value="0.04">Large (4%): only runners close to the camera</option>
+          </select>
+        </label>
+        <label class="check"><input id="set-lookalikes" type="checkbox"> Read a single look-alike letter as its digit (O as 0, S as 5)</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Camera</legend>
+        <label class="field">
+          <span>Lens</span>
+          <select id="set-lens"></select>
+        </label>
+        <label class="field" id="set-zoom-field" hidden>
+          <span>Zoom <output id="set-zoom-shown"></output></span>
+          <input id="set-zoom" type="range">
+        </label>
+        <label class="field">
+          <span>How closely each picture is searched</span>
+          <select id="set-detail">
+            <option value="fast">Quick: more looks a second, for bibs that are large in the picture</option>
+            <option value="standard">Standard</option>
+            <option value="far">Thorough: finds smaller bibs, fewer looks a second</option>
+          </select>
+        </label>
+        <label class="check"><input id="set-photos" type="checkbox"> Keep a small photo with each result</label>
+      </fieldset>
+
+      <details>
+        <summary>For fine-tuning</summary>
+        <label class="field">
+          <span>Processor cores used for reading</span>
+          <select id="set-threads">
+            <option value="0">Automatic</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <p class="note">Left to itself, an iPad reads with one core: reading with several needs something that Safari
+          has been known to refuse on some versions of iPadOS. It is worth trying 2 (or 4 on an iPad with an M-series
+          chip) and keeping whichever shows the most looks a second at the top of the picture. If reading with several
+          cores does not work, the page goes back to one by itself.</p>
+        <label class="field">
+          <span>Camera delay, in milliseconds</span>
+          <input id="set-delay" type="number" min="0" max="500" step="5" inputmode="numeric">
+        </label>
+        <p class="note">The camera delay is how long a picture takes to get from the lens to the page; it is taken
+          off every time, where the browser does not report it itself.</p>
+        <p id="about" class="note"></p>
+        <p class="note"><a class="link" href="/vendor/NOTICE.txt" target="_blank" rel="noopener">Whose work the bib reader is, and its licences</a></p>
+      </details>
+
+      <div class="buttons">
+        <button id="forget-key" class="quiet danger" type="button">Forget the access key</button>
+        <a class="link" href="/" target="_blank" rel="noopener">Open the results page</a>
+        <span class="spacer"></span>
+        <button id="settings-close" type="button">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="capture.js" type="module"></script>
+</body>
+</html>

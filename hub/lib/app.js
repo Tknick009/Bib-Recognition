@@ -2,6 +2,9 @@
 //
 //   GET    /health                                   is the server up (no key needed)
 //   GET    /                                         the live results page
+//   GET    /capture/                                 the page that turns an iPad into a bib-reading camera
+//   GET    /vendor/...                               what that page needs to read numbers (no key needed)
+//   GET    /api/time                                 the hub's clock, for the iPads to set theirs by
 //   GET    /api/ping                                 checks an address and key
 //   GET    /api/events                               the events the hub holds
 //   GET    /api/events/:code/live?since=N            what changed since revision N
@@ -25,6 +28,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { HubClock } from './ntp.js';
 import { isDeviceID, isEventCode } from './store.js';
 import { elapsed, fileSlug, isTimeZone, runScoreField, runScoreLine, timeOfDay, toCSV } from './format.js';
 
@@ -43,6 +47,51 @@ const staticFiles = {
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/runscore.ps1': ['runscore.ps1', 'text/plain; charset=utf-8'],
 };
+
+const typesByExtension = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.txt': 'text/plain; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.onnx': 'application/octet-stream',
+};
+
+// The results page loads nothing from anywhere else and runs no inline script.
+const pagePolicy = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+// The capture page also runs the number-reading program (WebAssembly, in
+// workers), shows the camera, and keeps pictures of bibs.
+const capturePolicy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; " +
+  "img-src 'self' blob: data:; media-src 'self' blob: mediastream:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+// With these the browser lets the number-reading program use several
+// processor cores at once, which makes it several times faster.
+const isolation = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+  'Cross-Origin-Resource-Policy': 'same-origin',
+};
+
+/** Every file below a folder, as paths relative to it with forward slashes. */
+function filesBelow(folder, prefix = '') {
+  let found = [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(folder, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    if (entry.isDirectory()) found = found.concat(filesBelow(path.join(folder, entry.name), `${prefix}${entry.name}/`));
+    else found.push(`${prefix}${entry.name}`);
+  }
+  return found.sort();
+}
 
 const securityHeaders = {
   'X-Content-Type-Options': 'nosniff',
@@ -125,11 +174,92 @@ function readBody(req) {
  * @param {string} [options.viewKey] an optional second key that can only read
  * @param {string} options.publicDir where the live page's files are
  */
-export function createHandler({ store, key, viewKey = '', publicDir, log = () => {} }) {
+export function createHandler({ store, key, viewKey = '', publicDir, log = () => {}, clock = new HubClock() }) {
   const files = new Map();
   for (const [route, [name, type]] of Object.entries(staticFiles)) {
     const body = fs.readFileSync(path.join(publicDir, name));
-    files.set(route, { body, type, tag: `"${shortHash(body)}"` });
+    files.set(route, { body, type, tag: `"${shortHash(body)}"`, policy: pagePolicy });
+  }
+
+  // The capture page: its own files, and the program and models it reads
+  // numbers with. Those are large and are sent from disk, in a form that was
+  // compressed when they were installed.
+  const captureFiles = [];
+  for (const name of filesBelow(path.join(publicDir, 'capture'))) {
+    const type = typesByExtension[path.extname(name)];
+    if (!type || name === 'sw.js') continue;
+    const body = fs.readFileSync(path.join(publicDir, 'capture', name));
+    const route = name === 'index.html' ? '/capture/' : `/capture/${name}`;
+    files.set(route, { body, type, tag: `"${shortHash(body)}"`, isolated: true, policy: name.endsWith('.html') ? capturePolicy : null });
+    captureFiles.push(route);
+  }
+  const vendorFiles = [];
+  for (const name of filesBelow(path.join(publicDir, 'vendor'))) {
+    const type = typesByExtension[path.extname(name)];
+    if (!type) continue; // among them the compressed copies, which are not addresses of their own
+    const file = path.join(publicDir, 'vendor', name);
+    const variants = { identity: { file, size: fs.statSync(file).size } };
+    for (const [encoding, extension] of [['br', '.br'], ['gzip', '.gz']]) {
+      if (fs.existsSync(file + extension)) variants[encoding] = { file: file + extension, size: fs.statSync(file + extension).size };
+    }
+    const hash = createHash('sha256');
+    hash.update(fs.readFileSync(file));
+    files.set(`/vendor/${name}`, { type, variants, hash: hash.digest('hex').slice(0, 16), isolated: true, policy: null });
+    vendorFiles.push(`/vendor/${name}`);
+  }
+  // Whether the capture page can read bibs: only if everything it needs was installed.
+  const canCapture = [
+    'ort.wasm.min.mjs', 'ort-wasm-simd-threaded.mjs', 'ort-wasm-simd-threaded.wasm', 'plain/ort.wasm.min.js', 'plain/ort-wasm-simd.wasm',
+    'detection.onnx', 'recognition.onnx', 'characters.txt',
+  ].every((name) => files.has(`/vendor/${name}`)) && files.has('/capture/');
+  if (files.has('/capture/') && !canCapture) {
+    log('the capture page cannot read bibs: its files are missing from public/vendor (run "npm install" in the hub folder)');
+  }
+
+  // The capture page keeps a copy of itself on the iPad, so that it opens
+  // without a connection. This is what to keep, in two groups, each with a
+  // version that changes whenever any file in it does: the page's own files
+  // (small, fetched at once) and what it reads numbers with (large, kept as
+  // it is first used, and not fetched again because the page has changed).
+  const versionOf = (routes) => shortHash(routes.map((route) => `${route}:${files.get(route).tag ?? files.get(route).hash}`).join('|'));
+  const kept = [
+    { name: 'page', version: versionOf(captureFiles), eager: true, files: captureFiles },
+    { name: 'reader', version: versionOf(vendorFiles), eager: false, files: vendorFiles },
+  ];
+  const workerFile = path.join(publicDir, 'capture', 'sw.js');
+  if (fs.existsSync(workerFile)) {
+    const body = Buffer.from(fs.readFileSync(workerFile, 'utf8').replace("'__GROUPS__'", JSON.stringify(kept)));
+    files.set('/capture/sw.js', { body, type: typesByExtension['.js'], tag: `"${shortHash(body)}"`, isolated: true, policy: null });
+  }
+
+  /** Sends one of the large files, in the most compact form the reader takes. */
+  function sendFromDisk(req, res, file) {
+    const accepted = String(req.headers['accept-encoding'] ?? '');
+    const encoding = /\bbr\b/.test(accepted) && file.variants.br ? 'br' : /\bgzip\b/.test(accepted) && file.variants.gzip ? 'gzip' : 'identity';
+    const variant = file.variants[encoding];
+    const tag = `"${file.hash}-${encoding}"`;
+    const headers = {
+      ...securityHeaders, ...isolation,
+      'Content-Type': file.type,
+      'Cache-Control': 'no-cache',
+      ETag: tag,
+      Vary: 'Accept-Encoding',
+    };
+    if (req.headers['if-none-match'] === tag) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    if (encoding !== 'identity') headers['Content-Encoding'] = encoding;
+    headers['Content-Length'] = variant.size;
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    const stream = fs.createReadStream(variant.file);
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
   }
 
   function accessLevel(req, url) {
@@ -221,7 +351,7 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     // the notes can show it once instead of once per result.
     if (entry.unsynced) {
       notes.push(`${entry.station} is not synced to a time server: its times come from the iPad's own clock and may be off. ` +
-        'Sync it (the badge at the top of the timing screen), then correct its times in Race setup.');
+        'Once its clock is set (the badge at the top of its screen says so), correct its times: on the camera page under Race, in the app under Race setup.');
     }
     return { seq: entry.seq, line: writer.line(entry.bib, entry.time, entry.station), note: notes.join(' ') };
   }
@@ -289,7 +419,7 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     return query.toString();
   }
 
-  async function handleAPI(req, res, url) {
+  async function handleAPI(req, res, url, arrived) {
     if (!key) {
       sendError(req, res, 503, 'This hub has no access key yet. Set the HUB_KEY variable on the server and restart it.');
       return;
@@ -309,7 +439,17 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     }
 
     if (segments.length === 2 && segments[1] === 'ping' && req.method === 'GET') {
-      sendJSON(req, res, 200, { ok: true, access: level, store: store.storeID, persistent: store.persistent });
+      sendJSON(req, res, 200, { ok: true, access: level, store: store.storeID, persistent: store.persistent, capture: canCapture });
+      return;
+    }
+
+    if (segments.length === 2 && segments[1] === 'time' && req.method === 'GET') {
+      // When the question arrived and when the answer leaves, by the hub's
+      // clock: from these and its own two notes the asker works out the
+      // difference between the clocks. `error` is how far off the hub's own
+      // clock may be, in milliseconds; null if it has never been checked.
+      const error = clock.error;
+      sendJSON(req, res, 200, { received: arrived, sent: clock.time(), error: error === null ? null : Math.round(error * 10) / 10, checked: clock.checked });
       return;
     }
 
@@ -437,6 +577,8 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
   }
 
   return async function handle(req, res) {
+    // Noted first of all, for readers that set their clock by the hub's.
+    const arrived = clock.time();
     let url;
     try {
       url = new URL(req.url, 'http://hub.invalid');
@@ -451,18 +593,28 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
         return;
       }
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-        await handleAPI(req, res, url);
+        await handleAPI(req, res, url, arrived);
+        return;
+      }
+      if (url.pathname === '/capture' && files.has('/capture/')) {
+        // With the slash at the end, so that the page's own files are found next to it.
+        send(req, res, 308, { Location: '/capture/' });
         return;
       }
       const file = files.get(url.pathname);
       if (file && (req.method === 'GET' || req.method === 'HEAD')) {
+        if (file.variants) {
+          sendFromDisk(req, res, file);
+          return;
+        }
         const headers = {
           'Content-Type': file.type,
           // The browser keeps its copy and only asks whether it is still current.
           'Cache-Control': 'no-cache',
           ETag: file.tag,
-          // The page loads nothing from anywhere else and runs no inline script.
-          'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+          ...(file.isolated ? isolation : {}),
+          ...(file.policy ? { 'Content-Security-Policy': file.policy } : {}),
+          ...(file.type.startsWith('text/html') && file.isolated ? { 'Permissions-Policy': 'camera=(self)' } : {}),
         };
         if (req.headers['if-none-match'] === file.tag) send(req, res, 304, headers);
         else send(req, res, 200, headers, file.body);

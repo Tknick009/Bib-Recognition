@@ -98,6 +98,7 @@ function signOut(problem) {
   $('waiting').hidden = true;
   $('status').hidden = true;
   $('sign-out').hidden = true;
+  $('camera-page').hidden = true;
   $('sign-in').hidden = false;
   $('key-problem').hidden = !problem;
   $('key-problem').textContent = problem ?? '';
@@ -125,6 +126,7 @@ async function signIn(key) {
   }
   $('sign-in').hidden = true;
   $('sign-out').hidden = false;
+  $('camera-page').hidden = false;
   $('status').hidden = false;
   state.eventsLoadedAt = 0;
   poll();
@@ -530,6 +532,21 @@ function downloadRunScoreFile() {
   return save(`/api/events/${encodeURIComponent(state.code)}/runscore.txt?${query}`);
 }
 
+/** A link that opens the camera page on an iPad without the key having to be typed there. */
+async function copyCameraLink() {
+  // After "#": that part of an address is not sent to any server.
+  const link = `${location.origin}/capture/#key=${encodeURIComponent(state.key)}`;
+  // Said wherever the button was pressed: on the card shown before there are results, or above the table.
+  const note = $('waiting').hidden ? $('note') : $('camera-note');
+  try {
+    await navigator.clipboard.writeText(link);
+    note.textContent = 'Link copied. Send it to the iPads (AirDrop or a message) and open it there in Safari. It contains the access key, so treat it like a password.';
+  } catch {
+    note.textContent = `Copy this link (it contains the access key): ${link}`;
+  }
+  note.hidden = false;
+}
+
 async function removeEvent() {
   const code = state.code;
   if (!code) return;
@@ -566,6 +583,7 @@ $('download-simple').addEventListener('click', () => download('simple'));
 $('download-detailed').addEventListener('click', () => download('detailed'));
 $('copy-link').addEventListener('click', copyLink);
 $('remove-event').addEventListener('click', removeEvent);
+for (const button of document.querySelectorAll('.copy-camera-link')) button.addEventListener('click', copyCameraLink);
 for (const id of ['rs-port', 'rs-location', 'rs-decimals']) $(id).addEventListener('input', drawRunScore);
 $('rs-copy').addEventListener('click', () => copyRunScoreLine(false));
 $('rs-copy-test').addEventListener('click', () => copyRunScoreLine(true));

@@ -5,3 +5,6 @@ BibTimer.swiftpm
 Tests
 hub/data
 hub/test
+hub/e2e
+hub/node_modules
+hub/public/vendor

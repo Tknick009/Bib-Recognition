@@ -2,13 +2,19 @@
   "name": "bib-timer-hub",
   "version": "1.0.0",
   "private": true,
-  "description": "Collects results from Bib Timer iPads and serves them to the scoring computer.",
+  "description": "Collects results from Bib Timer iPads, serves them to the scoring computer, and serves the page that turns an iPad into a bib-reading camera.",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "postinstall": "node scripts/vendor.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.31.1",
+    "onnxruntime-web-plain": "npm:onnxruntime-web@1.18.0",
+    "paddleocr-browser": "1.0.4"
   }
 }

@@ -6,18 +6,23 @@
 //   HUB_VIEW_KEY  optional second key that can view results but not change them
 //   DATA_DIR      folder for the saved copy of the results (attach a volume here)
 //   PORT          port to listen on (set by the hosting service)
+//   HUB_TIME_SERVERS  time servers to check the hub's clock against, separated
+//                 by commas ("none" to leave the clock as it is)
 
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHandler } from './lib/app.js';
+import { defaultTimeServers, HubClock } from './lib/ntp.js';
 import { Store } from './lib/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const minimumKeyLength = 8;
 
 /** Starts a hub. Resolves once it is listening. */
-export async function startHub({ port = 0, host = '0.0.0.0', key = '', viewKey = '', dataDir = null, log = () => {} } = {}) {
+export async function startHub({
+  port = 0, host = '0.0.0.0', key = '', viewKey = '', dataDir = null, timeServers = [], publicDir = path.join(here, 'public'), log = () => {},
+} = {}) {
   let usableKey = key;
   if (key.length < minimumKeyLength) {
     usableKey = '';
@@ -28,7 +33,11 @@ export async function startHub({ port = 0, host = '0.0.0.0', key = '', viewKey =
   const usableViewKey = viewKey.length >= minimumKeyLength && viewKey !== usableKey ? viewKey : '';
 
   const store = new Store({ dataDir, log });
-  const handler = createHandler({ store, key: usableKey, viewKey: usableViewKey, publicDir: path.join(here, 'public'), log });
+  // The iPads set their clocks by the hub's, so the hub checks its own
+  // against time servers (unless it was given none to ask).
+  const clock = new HubClock({ servers: timeServers, log });
+  clock.start();
+  const handler = createHandler({ store, key: usableKey, viewKey: usableViewKey, publicDir, log, clock });
   const server = http.createServer(handler);
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -38,8 +47,10 @@ export async function startHub({ port = 0, host = '0.0.0.0', key = '', viewKey =
   return {
     server,
     store,
+    clock,
     port: server.address().port,
     async close() {
+      clock.stop();
       store.flush();
       const closed = new Promise((resolve) => server.close(resolve));
       // Idle keep-alive connections would otherwise hold the server open.
@@ -56,6 +67,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     key: process.env.HUB_KEY ?? '',
     viewKey: process.env.HUB_VIEW_KEY ?? '',
     dataDir: process.env.DATA_DIR || path.join(here, 'data'),
+    timeServers: process.env.HUB_TIME_SERVERS === undefined
+      ? defaultTimeServers
+      : process.env.HUB_TIME_SERVERS.split(',').map((name) => name.trim()).filter((name) => name !== '' && name !== 'none'),
     log,
   });
   log(`listening on port ${hub.port}`);

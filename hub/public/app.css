@@ -103,6 +103,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .status.down { color: var(--bad); }
 
 .problem { color: var(--bad); }
+.link { color: var(--accent); font-size: 0.95rem; }
 
 .controls { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
 .field { display: grid; gap: 4px; flex: 1 1 260px; }

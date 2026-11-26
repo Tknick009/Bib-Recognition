@@ -39,11 +39,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Fetch what the capture page reads bib numbers with
+        working-directory: hub
+        run: npm ci --no-audit --no-fund
       - name: Tests, including the RunScore connector run by PowerShell 7
         working-directory: hub
         env:
           BIBTIMER_POWERSHELL: pwsh
           BIBTIMER_POWERSHELL_REQUIRED: 1
+          BIBTIMER_READER_REQUIRED: 1
         run: node --test
       - name: Build the image the hosting service builds, and start it
         run: |
@@ -54,12 +58,66 @@ jobs:
             sleep 1
           done
           echo
-          curl -fsS -H "Authorization: Bearer ci-image-check-key" http://127.0.0.1:8080/api/ping
+          # The image has to hold what the capture page reads bib numbers
+          # with: the build fetches it, and the hub says whether it is there.
+          curl -fsS -H "Authorization: Bearer ci-image-check-key" http://127.0.0.1:8080/api/ping | tee /dev/stderr | grep -q '"capture":true'
           echo
           curl -fsS -o /dev/null http://127.0.0.1:8080/
+          curl -fsS -o /dev/null http://127.0.0.1:8080/capture/
+          curl -fsS -o /dev/null -H "Accept-Encoding: br" http://127.0.0.1:8080/vendor/plain/ort-wasm-simd.wasm
+          curl -fsS -o /dev/null -H "Accept-Encoding: br" http://127.0.0.1:8080/vendor/detection.onnx
           # The program for the scoring computer has to be in the image too.
           curl -fsS http://127.0.0.1:8080/runscore.ps1 | grep -q "Bib Timer -> RunScore"
           docker logs hub
+
+  capture:
+    # The page the iPads capture a race with, driven in real browsers with a
+    # stand-in for the camera: signing in, reading bibs, timing them at the
+    # line, sending them to a hub, working without a connection. WebKit is the
+    # engine of Safari, the only kind of browser an iPad has; it is also run
+    # made up as an iPad, which gets the plain form of the bib reader.
+    name: Capture page (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Chromium
+            os: ubuntu-latest
+            browser: chromium
+            device: none
+          - name: WebKit
+            os: macos-latest
+            browser: webkit
+            device: none
+          - name: WebKit as an iPad
+            os: macos-latest
+            browser: webkit
+            device: ipad
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch what the capture page reads bib numbers with
+        working-directory: hub
+        run: npm ci --no-audit --no-fund
+      - name: Fetch the browser
+        working-directory: hub
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.63.0
+          npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Capture a race in the browser
+        working-directory: hub
+        run: node e2e/capture.e2e.mjs --browser=${{ matrix.browser }} --device=${{ matrix.device }} --shots=e2e-shots
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: capture-${{ matrix.browser }}-${{ matrix.device }}
+          path: hub/e2e-shots
+          if-no-files-found: ignore
 
   connector:
     # The program that passes results on to RunScore runs on the scoring
