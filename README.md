@@ -330,7 +330,7 @@ There is nothing to install.
 1. **In RunScore**, set up the timer input for its open format over TCP, give
    it a port (3988 is a common choice) and start it. In the versions of
    RunScore described online this is under *Tools → Initialize → External
-   Timer*, which has a TCP box and a port; I could not check that against
+   Timer*, which has a TCP box and a port; that has not been checked against
    RunScore itself. What matters is that RunScore listens on a TCP port for
    lines that begin with `RSBI`.
 2. **On the hub's page**, open **Send results to RunScore**, enter the port,
@@ -377,7 +377,8 @@ How it behaves:
   give every line the same one. With two iPads on one finish line RunScore
   then gets two times for most runners, as it would from a main and a backup
   chip mat. To feed two separate inputs in RunScore, tick one iPad at a time
-  on the page and make a line for each port.
+  on the page and make a line for each port. Run one connector per port, not
+  two into the same one.
 - **An iPad that is not synced.** Its results are passed on all the same, and
   the window warns, once, that its times come from the iPad's own clock.
 - **A click in the window.** In the classic Windows console a click selects
