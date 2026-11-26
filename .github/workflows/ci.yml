@@ -33,13 +33,17 @@ jobs:
   hub:
     name: Results hub (Node tests, Docker image)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Tests
+      - name: Tests, including the RunScore connector run by PowerShell 7
         working-directory: hub
+        env:
+          BIBTIMER_POWERSHELL: pwsh
+          BIBTIMER_POWERSHELL_REQUIRED: 1
         run: node --test
       - name: Build the image the hosting service builds, and start it
         run: |
@@ -54,6 +58,25 @@ jobs:
           echo
           curl -fsS -o /dev/null http://127.0.0.1:8080/
           docker logs hub
+
+  connector:
+    # The program that passes results on to RunScore runs on the scoring
+    # computer, which is a Windows machine: so it is tested on one, with the
+    # PowerShell that comes with Windows as well as with PowerShell 7.
+    name: RunScore connector (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pass results from a hub to a stand-in for RunScore
+        working-directory: hub
+        env:
+          BIBTIMER_POWERSHELL: powershell,pwsh
+          BIBTIMER_POWERSHELL_REQUIRED: 1
+        run: node --test test/connector.test.js
 
   apple:
     name: Tests and iOS build (macOS)

@@ -60,12 +60,22 @@ async function errorMessage(response) {
   }
 }
 
-function resultsQuery({ format } = {}) {
+/** The iPads whose results are shown: all of them, unless some have been unticked. */
+function shownStations() {
+  return (state.info?.stations ?? []).filter((station) => !state.hiddenDevices.has(station.device));
+}
+
+/**
+ * The part of an address that says which results are wanted: those shown on
+ * the page, or those of one iPad (`only`).
+ */
+function resultsQuery({ format, only = null } = {}) {
   const query = new URLSearchParams();
   if (format) query.set('format', format);
-  if (state.hiddenDevices.size > 0 && state.info) {
-    const shown = state.info.stations.filter((station) => !state.hiddenDevices.has(station.device));
-    query.set('devices', shown.map((station) => station.device).join(','));
+  if (only) {
+    query.set('devices', only.device);
+  } else if (state.hiddenDevices.size > 0 && state.info) {
+    query.set('devices', shownStations().map((station) => station.device).join(','));
   }
   if ($('first-only').checked) query.set('dedupe', 'first');
   const text = query.toString();
@@ -303,10 +313,10 @@ function drawStations() {
   const container = $('stations');
   // The chips are only rebuilt when the stations themselves change, so a
   // checkbox is never replaced while someone is clicking it.
-  const shape = info.stations.map((station) => `${station.device}\u0000${station.station}`).join('\u0001');
+  const shape = info.stations.map((station) => `${station.device}\u0000${station.label}`).join('\u0001');
   if (container.dataset.shape !== shape) {
     container.replaceChildren(...info.stations.map((station) => {
-      const chip = element('label', 'station');
+      const chip = element('div', 'station');
       chip.dataset.device = station.device;
       const box = element('input');
       box.type = 'checkbox';
@@ -316,7 +326,14 @@ function drawStations() {
         else state.hiddenDevices.add(station.device);
         draw();
       });
-      chip.append(box, element('span', null, station.station), element('span', 'count'), element('span', 'age'));
+      const name = element('label');
+      name.append(box, element('span', null, station.label), element('span', 'count'), element('span', 'age'));
+      // This iPad's results on their own, whatever is ticked.
+      const csv = element('button', 'mini', 'CSV');
+      csv.type = 'button';
+      csv.title = `Download the results from ${station.label} only`;
+      csv.addEventListener('click', () => download('simple', station));
+      chip.append(name, csv);
       return chip;
     }));
     container.dataset.shape = shape;
@@ -364,6 +381,8 @@ function draw() {
   // Rows that were not there at the previous draw are highlighted briefly.
   const previouslySeen = state.seen;
   state.seen = new Set(state.rows.keys());
+  // Two iPads may have been given the same station name; their labels differ.
+  const labels = new Map(info.stations.map((station) => [station.device, station.label]));
 
   const numbered = rows.map((row, index) => ({ row, position: index + 1 }));
   if ($('newest-first').checked) numbered.reverse();
@@ -375,7 +394,7 @@ function draw() {
       element('td', row.bib === '' ? 'bib missing' : 'bib', row.bib === '' ? '?' : row.bib),
       element('td', null, timeOfDay(row.time, info.timeZone)),
       element('td', null, info.startTime == null ? '' : elapsed(info.startTime, row.time)),
-      element('td', null, row.station),
+      element('td', null, labels.get(row.device) ?? row.station),
     );
     const notes = element('td', 'notes');
     if (row.source === 'manual') notes.append(element('span', 'tag', 'by hand'));
@@ -386,23 +405,35 @@ function draw() {
     return line;
   }));
   $('empty').hidden = rows.length > 0;
+  drawRunScore();
 }
 
 // ---- Downloads ----
 
-async function download(format) {
-  const response = await request(`/api/events/${encodeURIComponent(state.code)}/results.csv${resultsQuery({ format })}`);
+/** Fetches a file from the hub and hands it to the browser to save. */
+async function save(path, rename = (name) => name) {
+  const response = await request(path);
   if (!response.ok) {
     showNote(await errorMessage(response));
     return;
   }
+  // The hub names the file after the event, and after the iPad if it is from just one.
+  const named = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') ?? '');
   const link = element('a');
   link.href = URL.createObjectURL(await response.blob());
-  link.download = `${state.code}${format === 'detailed' ? '-details' : ''}.csv`;
+  link.download = rename(named ? named[1] : state.code);
   document.body.append(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+}
+
+/** Downloads the results shown, or those of one iPad (`only`), as CSV. */
+function download(format, only = null) {
+  return save(
+    `/api/events/${encodeURIComponent(state.code)}/results.csv${resultsQuery({ format, only })}`,
+    (name) => (format === 'detailed' ? name.replace(/\.csv$/, '-details.csv') : name),
+  );
 }
 
 function showNote(text) {
@@ -420,6 +451,76 @@ async function copyLink() {
   } catch {
     showNote(`Copy this link (it contains the access key): ${link}`);
   }
+}
+
+// ---- RunScore ----
+
+/** Text as PowerShell reads it literally: in single quotes, with any single quote doubled. */
+function quoted(text) {
+  return `'${String(text).replaceAll("'", "''")}'`;
+}
+
+/** What the operator has entered in the RunScore panel. */
+function runScoreSettings() {
+  const port = Math.trunc(Number($('rs-port').value));
+  return {
+    port: port >= 1 && port <= 65535 ? port : 3988,
+    // A comma would end the field in RunScore's format.
+    location: $('rs-location').value.replaceAll(',', ' ').replace(/\s+/g, ' ').trim(),
+    decimals: $('rs-decimals').value,
+  };
+}
+
+/**
+ * The line to paste into Windows PowerShell on the scoring computer. It
+ * fetches the program from this site and starts it with these settings.
+ */
+function runScoreLine({ test = false } = {}) {
+  const { port, location: where, decimals } = runScoreSettings();
+  const settings = [];
+  if (test) {
+    settings.push('-Test');
+  } else {
+    settings.push('-Hub', quoted(location.origin), '-Key', quoted(state.key), '-EventCode', quoted(state.code));
+    if (state.hiddenDevices.size > 0) settings.push('-Devices', quoted(shownStations().map((station) => station.device).join(',')));
+  }
+  settings.push('-RunScorePort', String(port));
+  if (where) settings.push('-Location', quoted(where));
+  if (decimals !== '2') settings.push('-Decimals', decimals);
+  return "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; " +
+    `& ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing ${quoted(`${location.origin}/runscore.ps1`)}))) ${settings.join(' ')}`;
+}
+
+function drawRunScore() {
+  if (!state.code || !state.info) return;
+  const shown = shownStations();
+  const all = state.hiddenDevices.size === 0;
+  $('rs-which').textContent = shown.length === 0
+    ? 'No iPad is ticked above, so there would be nothing to pass on.'
+    : `Results from ${all ? 'every iPad' : shown.map((station) => station.label).join(', ')} are passed on` +
+      `${all ? '' : ' (the ones ticked above)'}. To feed two RunScore inputs, tick one iPad at a time and make a line for each port.`;
+  const line = runScoreLine();
+  if ($('rs-command').value !== line) $('rs-command').value = line;
+}
+
+async function copyRunScoreLine(test) {
+  const line = runScoreLine({ test });
+  try {
+    await navigator.clipboard.writeText(line);
+    showNote(test
+      ? 'Test line copied. Pasted into Windows PowerShell, it sends RunScore one made-up result (bib 9999 at the present time) and stops.'
+      : 'Line copied. Paste it into Windows PowerShell on the scoring computer and press Enter.');
+  } catch {
+    showNote(`Copy this line: ${line}`);
+  }
+}
+
+function downloadRunScoreFile() {
+  const { location: where, decimals } = runScoreSettings();
+  const query = new URLSearchParams(resultsQuery().slice(1));
+  if (where) query.set('location', where);
+  query.set('decimals', decimals);
+  return save(`/api/events/${encodeURIComponent(state.code)}/runscore.txt?${query}`);
 }
 
 async function removeEvent() {
@@ -458,6 +559,11 @@ $('download-simple').addEventListener('click', () => download('simple'));
 $('download-detailed').addEventListener('click', () => download('detailed'));
 $('copy-link').addEventListener('click', copyLink);
 $('remove-event').addEventListener('click', removeEvent);
+for (const id of ['rs-port', 'rs-location', 'rs-decimals']) $(id).addEventListener('input', drawRunScore);
+$('rs-copy').addEventListener('click', () => copyRunScoreLine(false));
+$('rs-copy-test').addEventListener('click', () => copyRunScoreLine(true));
+$('rs-file').addEventListener('click', downloadRunScoreFile);
+$('rs-command').addEventListener('focus', (event) => event.target.select());
 setInterval(() => {
   if (state.key) {
     drawStatus();

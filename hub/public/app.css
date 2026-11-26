@@ -68,7 +68,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 16px; }
 
 form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
-input[type="password"], select {
+input[type="password"], input[type="text"], input[type="number"], select {
   font: inherit;
   color: inherit;
   background: var(--page);
@@ -126,7 +126,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   user-select: none;
 }
 
+.station label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 .station input { margin: 0; }
+
+/* A small button inside a chip. */
+button.mini {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--line);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
 .station .count { font-variant-numeric: tabular-nums; font-weight: 600; }
 .station .age { color: var(--muted); }
 .station.quiet-for-long .age { color: var(--warn); font-weight: 600; }
@@ -172,3 +185,34 @@ tr.fresh td { animation: arrive 1.6s ease-out; }
 @media (prefers-reduced-motion: reduce) { tr.fresh td { animation: none; } }
 
 .empty { text-align: center; color: var(--muted); padding: 28px; margin: 0; }
+
+/* Something to set up once, folded away until it is wanted. */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin: 10px 0 14px;
+}
+
+.panel summary { cursor: pointer; font-weight: 600; }
+.panel[open] summary { margin-bottom: 6px; }
+.panel p, .panel ol { color: var(--muted); font-size: 0.95rem; margin: 8px 0; }
+.panel ol { padding-left: 1.3rem; }
+.panel li { margin: 4px 0; }
+.panel .fields { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0 4px; }
+.panel .field { flex: 1 1 200px; }
+.panel .field input, .panel .field select { width: 100%; }
+
+.command {
+  display: block;
+  width: 100%;
+  font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  color: inherit;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  resize: vertical;
+  overflow-wrap: anywhere;
+}

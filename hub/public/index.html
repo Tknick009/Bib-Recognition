@@ -56,6 +56,50 @@
       </div>
       <p id="note" class="note" hidden></p>
 
+      <details id="runscore" class="panel">
+        <summary>Send results to RunScore</summary>
+        <p>RunScore takes results over a TCP connection on the computer it runs on. This site cannot reach into that
+          computer, so a small program running there fetches each new result from here and hands it to RunScore. It
+          runs in Windows PowerShell, which every Windows computer has: there is nothing to install.</p>
+        <ol>
+          <li>In RunScore, set up the timer input for RunScore's open format (lines that begin with RSBI) over TCP,
+            start it, and note its port.</li>
+          <li>Enter that port here. The line below changes with what you enter.</li>
+          <li>On the scoring computer, open <strong>Windows PowerShell</strong>, paste the line and press Enter.
+            Leave that window open for the race. It shows every result it passes on.</li>
+        </ol>
+        <div class="fields">
+          <label class="field">
+            <span>RunScore port</span>
+            <input id="rs-port" type="number" min="1" max="65535" value="3988" inputmode="numeric">
+          </label>
+          <label class="field">
+            <span>Location name on every line</span>
+            <input id="rs-location" type="text" maxlength="40" placeholder="Leave empty to use each iPad's station name" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Time</span>
+            <select id="rs-decimals">
+              <option value="2" selected>Hundredths (10:23:45.67)</option>
+              <option value="3">Thousandths (10:23:45.678)</option>
+              <option value="1">Tenths (10:23:45.6)</option>
+              <option value="0">Whole seconds (10:23:45)</option>
+            </select>
+          </label>
+        </div>
+        <p id="rs-which" class="note"></p>
+        <textarea id="rs-command" class="command" rows="4" readonly spellcheck="false" aria-label="Line to paste into Windows PowerShell"></textarea>
+        <div class="options">
+          <button id="rs-copy" type="button">Copy the line</button>
+          <button id="rs-copy-test" class="quiet" type="button">Copy a line that only tests the connection</button>
+          <button id="rs-file" class="quiet" type="button">Download as a RunScore file</button>
+        </div>
+        <p class="note">The line contains the access key, so treat it like a password. A result is passed on about
+          eight seconds after it is recorded, which gives the camera time to correct a number. RunScore cannot be asked
+          to take a result back: if one is corrected or deleted on an iPad after it was passed on, the PowerShell window
+          says so, and it has to be put right in RunScore by hand.</p>
+      </details>
+
       <div class="table-wrap">
         <table>
           <thead>

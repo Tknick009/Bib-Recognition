@@ -7,6 +7,9 @@
 //   GET    /api/events/:code/live?since=N            what changed since revision N
 //   GET    /api/events/:code/results.json            all results of an event
 //   GET    /api/events/:code/results.csv             the same as a CSV file
+//   GET    /api/events/:code/runscore?after=N        results to pass on to RunScore, in order
+//   GET    /api/events/:code/runscore.txt            all results as RunScore lines, as a file
+//   GET    /runscore.ps1                             the program that passes them on (no key needed)
 //   PUT    /api/events/:code/sources/:device         an iPad sends its results
 //   DELETE /api/events/:code                         removes an event from the hub
 //
@@ -23,15 +26,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { isDeviceID, isEventCode } from './store.js';
-import { isTimeZone, toCSV } from './format.js';
+import { elapsed, fileSlug, isTimeZone, runScoreField, runScoreLine, timeOfDay, toCSV } from './format.js';
 
 const maxBodyBytes = 8 * 1024 * 1024;
 const compressFromBytes = 1024;
+// A reader of the RunScore feed may ask the hub to hold its answer until there
+// is something to pass on: for at most this long, so that no network in
+// between gives up on the request, and looking this often.
+const longestWaitSeconds = 25;
+const waitCheckEvery = 400;
+const mostWaiting = 100;
 
 const staticFiles = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
+  '/runscore.ps1': ['runscore.ps1', 'text/plain; charset=utf-8'],
 };
 
 const securityHeaders = {
@@ -148,6 +158,124 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     };
   }
 
+  function wholeNumber(url, name, { min, max, fallback }) {
+    const raw = url.searchParams.get(name) ?? '';
+    if (!/^\d{1,15}$/.test(raw)) return fallback;
+    return Math.min(max, Math.max(min, Number(raw)));
+  }
+
+  /** The file name for a download: the event, and the iPad if the rows are from just one. */
+  function downloadName(code, results, options) {
+    const narrowed = options.stations !== null || options.devices !== null;
+    return narrowed && results.included.length === 1 ? `${code}-${fileSlug(results.included[0])}` : code;
+  }
+
+  // ---- RunScore ----
+
+  /** How results are to be written for RunScore, as asked for in the address. */
+  function runScoreOptions(url) {
+    const prefix = url.searchParams.get('prefix') ?? '';
+    return {
+      prefix: /^[A-Za-z]{1,10}$/.test(prefix) ? prefix.toUpperCase() : 'RSBI',
+      // One name for every result; without it, each result carries the name of its iPad.
+      location: runScoreField(url.searchParams.get('location') ?? ''),
+      decimals: wholeNumber(url, 'decimals', { min: 0, max: 3, fallback: 2 }),
+      elapsed: url.searchParams.get('time') === 'elapsed',
+      timeZone: url.searchParams.get('tz'),
+    };
+  }
+
+  const needsStartTime = 'Times since the start were asked for, but no start time has been set on an iPad. Set one, or ask for the time of day.';
+
+  /** Writes times and lines the way `options` ask, for an event's time zone and start. */
+  function runScoreWriter(options, { timeZone, startTime }) {
+    const zone = isTimeZone(options.timeZone) ? options.timeZone : isTimeZone(timeZone) ? timeZone : 'UTC';
+    const time = (seconds) => (options.elapsed
+      ? elapsed(startTime, seconds, options.decimals)
+      : timeOfDay(seconds, zone, options.decimals));
+    const line = (bib, seconds, station) => runScoreLine({
+      prefix: options.prefix, bib, time: time(seconds), location: options.location || station,
+    });
+    return { time, line };
+  }
+
+  /** A feed entry as the program that passes results on needs it: the line to send, and what to tell the operator. */
+  function describeEntry(entry, writer) {
+    const was = entry.was;
+    if (entry.kind === 'gone') {
+      return {
+        seq: entry.seq,
+        line: null,
+        note: `Removed on the iPad (${entry.station}) after it was passed on: bib ${was.bib} at ${writer.time(was.time)}. Take it out in RunScore.`,
+      };
+    }
+    let note = '';
+    if (was && was.bib !== entry.bib) {
+      note = `Corrected on the iPad (${entry.station}): bib ${was.bib} at ${writer.time(was.time)} should be bib ${entry.bib}. ` +
+        `Bib ${entry.bib} is passed on now; take bib ${was.bib} at that time out in RunScore.`;
+    } else if (was) {
+      note = `Time corrected on the iPad (${entry.station}): bib ${entry.bib} was passed on at ${writer.time(was.time)} and is now ` +
+        `${writer.time(entry.time)}. Take the earlier time out in RunScore.`;
+    }
+    return { seq: entry.seq, line: writer.line(entry.bib, entry.time, entry.station), note };
+  }
+
+  /** What to answer a reader of the feed right now; null if the event is gone. */
+  function feedReply(code, url) {
+    const options = runScoreOptions(url);
+    const result = store.feed(code, {
+      after: wholeNumber(url, 'after', { min: 0, max: Number.MAX_SAFE_INTEGER, fallback: 0 }),
+      feedID: url.searchParams.get('feed'),
+      settle: wholeNumber(url, 'settle', { min: 0, max: 300, fallback: 8 }),
+      limit: wholeNumber(url, 'limit', { min: 1, max: 1000, fallback: 500 }),
+      stations: list(url, 'stations', 'station'),
+      devices: list(url, 'devices'),
+    });
+    if (!result) return null;
+    if (options.elapsed && result.startTime === null) return { problem: needsStartTime };
+    const writer = runScoreWriter(options, result);
+    return { feed: result.feedID, next: result.next, entries: result.entries.map((entry) => describeEntry(entry, writer)) };
+  }
+
+  // Readers waiting for something to pass on. Results join the feed by time
+  // passing as much as by arriving, so the waiting list is simply looked
+  // through a few times a second for as long as anyone is on it.
+  const waiting = new Set();
+  let waitTimer = null;
+
+  function lookThroughWaiting() {
+    const now = Date.now();
+    for (const reader of [...waiting]) {
+      let reply;
+      try {
+        reply = reader.reply();
+      } catch (error) {
+        log(`feed request failed: ${error.stack ?? error}`);
+        waiting.delete(reader);
+        if (!reader.res.headersSent) sendError(reader.req, reader.res, 500, 'The hub ran into a problem handling this request.');
+        continue;
+      }
+      if (reply === null || reply.problem || reply.entries.length > 0 || now >= reader.until) {
+        waiting.delete(reader);
+        reader.answer(reply);
+      }
+    }
+    if (waiting.size === 0 && waitTimer) {
+      clearInterval(waitTimer);
+      waitTimer = null;
+    }
+  }
+
+  function waitForFeed(reader) {
+    waiting.add(reader);
+    // A reader that has gone away is not kept waiting for.
+    reader.res.on('close', () => waiting.delete(reader));
+    if (!waitTimer) {
+      waitTimer = setInterval(lookThroughWaiting, waitCheckEvery);
+      waitTimer.unref();
+    }
+  }
+
   /** The address without the key, so two readers with different keys share a version tag. */
   function queryWithoutKey(url) {
     const query = new URLSearchParams(url.searchParams);
@@ -239,13 +367,45 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
       return;
     }
 
+    if (segments[3] === 'runscore') {
+      const noSuchEventNow = 'The hub no longer has an event with this code.';
+      const answer = (reply) => {
+        if (reply === null) return sendError(req, res, 404, noSuchEventNow);
+        if (reply.problem) return sendError(req, res, 409, reply.problem);
+        sendJSON(req, res, 200, { now: Date.now(), ...reply });
+      };
+      const first = feedReply(code, url);
+      if (first === null) return sendError(req, res, 404, noSuchEvent);
+      const wait = wholeNumber(url, 'wait', { min: 0, max: longestWaitSeconds, fallback: 0 });
+      if (first.problem || first.entries.length > 0 || wait === 0 || waiting.size >= mostWaiting) return answer(first);
+      waitForFeed({ req, res, until: Date.now() + wait * 1000, reply: () => feedReply(code, url), answer });
+      return;
+    }
+
+    if (segments[3] === 'runscore.txt') {
+      if (!store.hasEvent(code)) return sendError(req, res, 404, noSuchEvent);
+      const filter = resultsOptions(url);
+      const results = store.results(code, filter);
+      const options = runScoreOptions(url);
+      if (options.elapsed && results.startTime === null) return sendError(req, res, 409, needsStartTime);
+      const writer = runScoreWriter(options, results);
+      const lines = results.rows.filter((row) => row.bib !== '').map((row) => writer.line(row.bib, row.time, row.station));
+      send(req, res, 200, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${downloadName(code, results, filter)}-runscore.txt"`,
+        'Cache-Control': 'no-store',
+      }, lines.map((line) => `${line}\r\n`).join(''));
+      return;
+    }
+
     const isJSON = segments[3] === 'results.json';
     const isCSV = segments[3] === 'results.csv';
     if (isJSON || isCSV) {
       if (!store.hasEvent(code)) return sendError(req, res, 404, noSuchEvent);
       const tag = `"${store.storeID}:${store.revision(code)}:${shortHash(queryWithoutKey(url))}"`;
       if (notModified(req, res, tag)) return;
-      const results = store.results(code, resultsOptions(url));
+      const filter = resultsOptions(url);
+      const results = store.results(code, filter);
 
       if (isJSON) {
         sendJSON(req, res, 200, { store: store.storeID, now: Date.now(), ...results }, { ETag: tag });
@@ -260,7 +420,7 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
       });
       send(req, res, 200, {
         'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${code}.csv"`,
+        'Content-Disposition': `attachment; filename="${downloadName(code, results, filter)}.csv"`,
         'Cache-Control': 'no-store',
         ETag: tag,
       }, csv);

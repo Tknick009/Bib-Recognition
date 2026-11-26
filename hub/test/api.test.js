@@ -273,3 +273,169 @@ test('a hub without a usable key refuses to serve results', async () => {
     }
   }
 });
+
+// ---- Each iPad on its own ----
+
+const deviceB = 'BBBBBBBB-0000-4000-8000-000000000002';
+
+test('each iPad\'s results can be downloaded on their own, in a file that says whose they are', async () => {
+  await call(`/api/events/two-ipads/sources/${device}`, { method: 'PUT', body: upload([crossing('a1', '7', 1432.5), crossing('a2', '12', 1500.25)], { station: 'Finish A' }) });
+  await call(`/api/events/two-ipads/sources/${deviceB}`, { method: 'PUT', body: upload([crossing('b1', '7', 1432.75)], { station: 'Finish B', startTime: null }) });
+
+  const both = await call('/api/events/two-ipads/results.csv');
+  assert.equal(both.headers.get('content-disposition'), 'attachment; filename="two-ipads.csv"');
+  assert.equal((await both.text()).trim().split('\r\n').length, 4);
+
+  const onlyB = await call(`/api/events/two-ipads/results.csv?devices=${deviceB}`);
+  assert.equal(onlyB.headers.get('content-disposition'), 'attachment; filename="two-ipads-finish-b.csv"');
+  assert.equal(await onlyB.text(), 'bib,time_of_day,elapsed,station\r\n7,00:23:52.750,0:23:52.750,Finish B\r\n');
+
+  const onlyA = await call('/api/events/two-ipads/results.csv?stations=finish%20a', { as: viewKey });
+  assert.equal(onlyA.headers.get('content-disposition'), 'attachment; filename="two-ipads-finish-a.csv"');
+  assert.equal(await onlyA.text(), 'bib,time_of_day,elapsed,station\r\n7,00:23:52.500,0:23:52.500,Finish A\r\n12,00:25:00.250,0:25:00.250,Finish A\r\n');
+
+  // Naming both is not "one iPad".
+  const named = await call(`/api/events/two-ipads/results.csv?devices=${device},${deviceB}`);
+  assert.equal(named.headers.get('content-disposition'), 'attachment; filename="two-ipads.csv"');
+
+  const live = await (await call('/api/events/two-ipads/live')).json();
+  assert.deepEqual(live.stations.map((station) => [station.label, station.device]), [['Finish A', device], ['Finish B', deviceB]]);
+});
+
+// ---- RunScore ----
+
+test('results are handed out one by one, as RunScore lines', async () => {
+  const reply = await (await call('/api/events/two-ipads/runscore?settle=0', { as: viewKey })).json();
+  assert.equal(typeof reply.feed, 'string');
+  assert.equal(reply.next, 3);
+  assert.deepEqual(reply.entries, [
+    { seq: 1, line: 'RSBI,7,00:23:52.50,Finish A', note: '' },
+    { seq: 2, line: 'RSBI,7,00:23:52.75,Finish B', note: '' },
+    { seq: 3, line: 'RSBI,12,00:25:00.25,Finish A', note: '' },
+  ]);
+
+  // Nothing new for a reader that has dealt with those.
+  const caughtUp = await (await call(`/api/events/two-ipads/runscore?settle=0&feed=${reply.feed}&after=3`)).json();
+  assert.deepEqual(caughtUp.entries, []);
+  assert.equal(caughtUp.next, 3);
+  assert.equal(caughtUp.feed, reply.feed);
+
+  // One iPad only, written another way.
+  const query = `settle=0&devices=${deviceB}&prefix=rsci&location=${encodeURIComponent('FINISH, MAIN')}&decimals=3&tz=America/New_York`;
+  const other = await (await call(`/api/events/two-ipads/runscore?${query}`)).json();
+  assert.deepEqual(other.entries, [{ seq: 2, line: 'RSCI,7,19:23:52.750,FINISH MAIN', note: '' }]);
+  assert.equal(other.next, 3);
+
+  // Time since the start instead of time of day.
+  const sinceStart = await (await call('/api/events/two-ipads/runscore?settle=0&time=elapsed&decimals=1&limit=1')).json();
+  assert.deepEqual(sinceStart.entries, [{ seq: 1, line: 'RSBI,7,0:23:52.5,Finish A', note: '' }]);
+  assert.equal(sinceStart.next, 1);
+});
+
+test('corrections and removals after a result has gone out come with a note for the operator', async () => {
+  const before = await (await call('/api/events/two-ipads/runscore?settle=0')).json();
+  await call(`/api/events/two-ipads/sources/${device}`, {
+    method: 'PUT',
+    body: upload([crossing('a1', '17', 1432.5)], { station: 'Finish A', full: false, deleted: ['a2'] }),
+  });
+  const reply = await (await call(`/api/events/two-ipads/runscore?settle=0&feed=${before.feed}&after=${before.next}`)).json();
+  assert.deepEqual(reply.entries, [
+    {
+      seq: 4,
+      line: null,
+      note: 'Removed on the iPad (Finish A) after it was passed on: bib 12 at 00:25:00.25. Take it out in RunScore.',
+    },
+    {
+      seq: 5,
+      line: 'RSBI,17,00:23:52.50,Finish A',
+      note: 'Corrected on the iPad (Finish A): bib 7 at 00:23:52.50 should be bib 17. Bib 17 is passed on now; take bib 7 at that time out in RunScore.',
+    },
+  ]);
+
+  await call(`/api/events/two-ipads/sources/${device}`, {
+    method: 'PUT',
+    body: upload([crossing('a1', '17', 1433.75)], { station: 'Finish A', full: false }),
+  });
+  const moved = await (await call(`/api/events/two-ipads/runscore?settle=0&feed=${before.feed}&after=5`)).json();
+  assert.deepEqual(moved.entries, [{
+    seq: 6,
+    line: 'RSBI,17,00:23:53.75,Finish A',
+    note: 'Time corrected on the iPad (Finish A): bib 17 was passed on at 00:23:52.50 and is now 00:23:53.75. Take the earlier time out in RunScore.',
+  }]);
+});
+
+test('the results as they stand can be had as a file of RunScore lines', async () => {
+  const all = await call('/api/events/two-ipads/runscore.txt', { as: viewKey });
+  assert.equal(all.status, 200);
+  assert.equal(all.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(all.headers.get('content-disposition'), 'attachment; filename="two-ipads-runscore.txt"');
+  assert.equal(await all.text(), 'RSBI,7,00:23:52.75,Finish B\r\nRSBI,17,00:23:53.75,Finish A\r\n');
+
+  const one = await call(`/api/events/two-ipads/runscore.txt?devices=${device}&location=FINISH&decimals=0`);
+  assert.equal(one.headers.get('content-disposition'), 'attachment; filename="two-ipads-finish-a-runscore.txt"');
+  assert.equal(await one.text(), 'RSBI,17,00:23:53,FINISH\r\n');
+
+  const first = await call('/api/events/two-ipads/runscore.txt?dedupe=first&location=FINISH');
+  assert.equal(await first.text(), 'RSBI,7,00:23:52.75,FINISH\r\nRSBI,17,00:23:53.75,FINISH\r\n');
+});
+
+test('a reader of the feed can wait for the next result instead of asking again and again', async () => {
+  const code = 'waiting-game';
+  await call(`/api/events/${code}/sources/${device}`, { method: 'PUT', body: upload([]) });
+  const empty = await (await call(`/api/events/${code}/runscore`)).json();
+  assert.deepEqual(empty.entries, []);
+
+  // Nothing arrives: the answer comes when the wait is over, and is empty.
+  let started = Date.now();
+  const nothing = await (await call(`/api/events/${code}/runscore?feed=${empty.feed}&after=0&wait=1&settle=1`)).json();
+  assert.deepEqual(nothing.entries, []);
+  let took = Date.now() - started;
+  assert.ok(took >= 900 && took < 3000, `an empty wait of 1 s took ${took} ms`);
+
+  // A result arrives while a reader waits: it is answered when the result has settled.
+  started = Date.now();
+  const pending = call(`/api/events/${code}/runscore?feed=${empty.feed}&after=0&wait=20&settle=1`).then((response) => response.json());
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await call(`/api/events/${code}/sources/${device}`, { method: 'PUT', body: upload([crossing('w1', '44', 60)], { full: false }) });
+  const arrived = await pending;
+  took = Date.now() - started;
+  assert.deepEqual(arrived.entries, [{ seq: 1, line: 'RSBI,44,00:01:00.00,Finish', note: '' }]);
+  assert.ok(took >= 1200 && took < 4000, `the result came after ${took} ms`);
+
+  // A reader that gives up is forgotten, and the hub carries on.
+  const controller = new AbortController();
+  const abandoned = fetch(`${base}/api/events/${code}/runscore?feed=${empty.feed}&after=1&wait=20`, {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: controller.signal,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  controller.abort();
+  await assert.rejects(abandoned);
+  assert.equal((await call('/health', { as: null })).status, 200);
+});
+
+test('the feed refuses what it cannot do', async () => {
+  assert.equal((await call('/api/events/two-ipads/runscore', { as: null })).status, 401);
+  assert.equal((await call('/api/events/no-such-event/runscore')).status, 404);
+  assert.equal((await call('/api/events/no-such-event/runscore.txt')).status, 404);
+
+  // Times since the start need a start time.
+  await call(`/api/events/no-start/sources/${device}`, { method: 'PUT', body: upload([crossing('n1', '3', 10)], { startTime: null }) });
+  const refused = await call('/api/events/no-start/runscore?settle=0&time=elapsed');
+  assert.equal(refused.status, 409);
+  assert.match((await refused.json()).error, /no start time/);
+  assert.equal((await call('/api/events/no-start/runscore.txt?time=elapsed')).status, 409);
+  // Nonsense settings fall back to the usual ones.
+  const odd = await (await call('/api/events/no-start/runscore?settle=0&decimals=9&prefix=R%20S&wait=x&limit=0&after=-4')).json();
+  assert.deepEqual(odd.entries, [{ seq: 1, line: 'RSBI,3,00:00:10.000,Finish', note: '' }]);
+});
+
+test('the program for the scoring computer is served without a key, as plain text', async () => {
+  const response = await call('/runscore.ps1', { as: null });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/plain; charset=utf-8');
+  const script = await response.text();
+  assert.match(script, /RunScore/);
+  // Windows PowerShell reads a file without a byte order mark as plain ASCII.
+  assert.ok(/^[\x09\x0a\x0d\x20-\x7e]*$/.test(script), 'the script must be plain ASCII');
+});

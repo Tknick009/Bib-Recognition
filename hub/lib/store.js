@@ -13,6 +13,12 @@
 // that already has revision N can therefore ask for just what happened since,
 // instead of downloading everything again. An upload that changes nothing (an
 // iPad checking in) does not create a revision.
+//
+// Besides the results as they stand, an event keeps a feed: an ordered list
+// that only ever grows, for a program that passes results on one by one (to
+// scoring software, say) and cannot take one back. A result joins the feed
+// once it has stopped changing for a few seconds. If it is corrected or
+// removed after that, the feed says so in a further entry.
 
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -24,6 +30,8 @@ export const limits = {
   crossingsPerSource: 50_000,
   // How many removals an event remembers, so readers can be told about them.
   removalsPerEvent: 20_000,
+  // How many feed entries an event keeps before the oldest are dropped.
+  feedEntries: 200_000,
 };
 
 const eventCodePattern = /^[a-z0-9](?:[a-z0-9-]{1,48})[a-z0-9]$/;
@@ -76,6 +84,19 @@ export function cleanCrossing(raw) {
 
 function sameCrossing(a, b) {
   return crossingFields.every((field) => a[field] === b[field]);
+}
+
+/** What a crossing looked like when it went into the feed; null if unusable. */
+function cleanFed(raw) {
+  if (raw === null || typeof raw !== 'object') return null;
+  const time = numberOrNull(raw.time, 0, latestTime);
+  if (time === null || typeof raw.bib !== 'string') return null;
+  return { bib: text(raw.bib, 16), time };
+}
+
+/** True if two times are the same to the millisecond. */
+function sameMoment(a, b) {
+  return Math.round(a * 1000) === Math.round(b * 1000);
 }
 
 function byTimeThenID(a, b) {
@@ -145,15 +166,17 @@ export class Store {
   results(code, { stations = null, devices = null, firstPerBib = false } = {}) {
     const event = this.#events.get(code);
     if (!event) return null;
-    const wanted = stations ? new Set(stations.map((name) => name.toLowerCase())) : null;
-    const wantedDevices = devices ? new Set(devices) : null;
+    const labels = this.#labels(event);
+    const chosen = this.#chooser(labels, stations, devices);
 
     let rows = [];
+    // The iPads the rows come from, by label.
+    const included = [];
     for (const source of event.sources.values()) {
-      if (wanted && !wanted.has(source.station.toLowerCase())) continue;
-      if (wantedDevices && !wantedDevices.has(source.device)) continue;
+      if (!chosen(source)) continue;
+      included.push(labels.get(source.device));
       for (const crossing of source.crossings.values()) {
-        rows.push({ ...crossing, station: source.station, device: source.device });
+        rows.push(this.#row(crossing, source, labels));
       }
     }
     rows.sort(byTimeThenID);
@@ -167,7 +190,7 @@ export class Store {
         return true;
       });
     }
-    return { ...this.#summary(event), rows };
+    return { ...this.#summary(event), included, rows };
   }
 
   /**
@@ -181,12 +204,11 @@ export class Store {
     if (!event) return null;
     const full = !(Number.isInteger(since) && since >= event.removedFloor && since <= event.revision);
 
+    const labels = this.#labels(event);
     const rows = [];
     for (const source of event.sources.values()) {
       for (const crossing of source.crossings.values()) {
-        if (full || crossing.rev > since) {
-          rows.push({ ...crossing, station: source.station, device: source.device });
-        }
+        if (full || crossing.rev > since) rows.push(this.#row(crossing, source, labels));
       }
     }
     rows.sort(byTimeThenID);
@@ -198,6 +220,114 @@ export class Store {
       }
     }
     return { ...this.#summary(event), full, rows, removed };
+  }
+
+  /** A crossing as readers get it: with the name of the iPad it came from. */
+  #row(crossing, source, labels) {
+    const { fed, at, ...fields } = crossing;
+    return { ...fields, station: labels.get(source.device), device: source.device };
+  }
+
+  /**
+   * Which iPads a reader asked for: by station name or label (in any letter
+   * case) and/or by device identifier. Without either, all of them.
+   */
+  #chooser(labels, stations, devices) {
+    const names = stations ? new Set(stations.map((name) => name.toLowerCase())) : null;
+    const ids = devices ? new Set(devices) : null;
+    return (source) => {
+      if (names && !names.has(source.station.toLowerCase()) && !names.has(labels.get(source.device).toLowerCase())) return false;
+      if (ids && !ids.has(source.device)) return false;
+      return true;
+    };
+  }
+
+  // ---- The feed ----
+
+  /**
+   * The feed entries after number `after`, oldest first.
+   *
+   * Looking is what makes results join the feed: each result that has a bib
+   * number and has not changed for `settle` seconds gets an entry, once. The
+   * wait covers the camera correcting a number while the bib is still in
+   * view. A result that changes after its entry gets another one, which says
+   * what it was before (`was`); one that is removed gets an entry of kind
+   * "gone".
+   *
+   * @param {string} code
+   * @param {object} options
+   * @param {number} options.after the last entry the reader has dealt with
+   * @param {string|null} options.feedID the feed that number belongs to; a reader
+   *   that last read another feed (the hub or the event has started afresh
+   *   since) is given everything from the beginning
+   * @param {number} options.settle seconds a result must have been unchanged
+   * @param {number} options.limit most entries to return at once
+   */
+  feed(code, { after = 0, feedID = null, settle = 8, stations = null, devices = null, limit = 500 } = {}) {
+    const event = this.#events.get(code);
+    if (!event) return null;
+    this.#fillFeed(event, settle);
+
+    const last = event.feedFloor + event.feed.length;
+    let from = Number.isInteger(after) && after > 0 ? after : 0;
+    // A reader ahead of the feed cannot have read this feed: start it over.
+    if (feedID !== event.feedID || from > last) from = 0;
+    from = Math.max(from, event.feedFloor);
+
+    const labels = this.#labels(event);
+    const chosen = this.#chooser(labels, stations, devices);
+    const entries = [];
+    let next = from;
+    for (let index = from - event.feedFloor; index < event.feed.length && entries.length < limit; index += 1) {
+      const entry = event.feed[index];
+      next = entry.seq;
+      const source = event.sources.get(entry.device);
+      if (!source || !chosen(source)) continue;
+      entries.push({ ...entry, station: labels.get(entry.device) });
+    }
+    const summary = this.#summary(event);
+    return { feedID: event.feedID, next, entries, timeZone: summary.timeZone, startTime: summary.startTime };
+  }
+
+  /** Gives every result that is due one an entry in the feed. */
+  #fillFeed(event, settle) {
+    const settledBefore = this.#now() - Math.max(0, settle) * 1000;
+    const due = [];
+    for (const source of event.sources.values()) {
+      for (const crossing of source.crossings.values()) {
+        const fed = crossing.fed;
+        const unchanged = fed && fed.bib === crossing.bib && sameMoment(fed.time, crossing.time);
+        if (unchanged || (crossing.at ?? 0) > settledBefore) continue;
+        // Without a number there is nothing to pass on, but if a number was
+        // passed on earlier, the reader has to hear that it no longer holds.
+        if (crossing.bib === '' && !fed) continue;
+        due.push({ source, crossing });
+      }
+    }
+    if (due.length === 0) return;
+
+    due.sort((a, b) => byTimeThenID(a.crossing, b.crossing));
+    for (const { source, crossing } of due) {
+      if (crossing.bib === '') {
+        this.#addToFeed(event, { kind: 'gone', device: source.device, id: crossing.id, was: crossing.fed });
+        delete crossing.fed;
+      } else {
+        const entry = { kind: 'read', device: source.device, id: crossing.id, bib: crossing.bib, time: crossing.time };
+        if (crossing.fed) entry.was = crossing.fed;
+        this.#addToFeed(event, entry);
+        crossing.fed = { bib: crossing.bib, time: crossing.time };
+      }
+    }
+    this.#scheduleSave(event.code);
+  }
+
+  #addToFeed(event, entry) {
+    event.feed.push({ seq: event.feedFloor + event.feed.length + 1, ...entry });
+    if (event.feed.length > limits.feedEntries) {
+      const drop = Math.floor(limits.feedEntries / 2);
+      event.feed.splice(0, drop);
+      event.feedFloor += drop;
+    }
   }
 
   // ---- Writing ----
@@ -213,7 +343,10 @@ export class Store {
     let event = this.#events.get(code);
     if (!event) {
       if (this.#events.size >= limits.events) return { error: 'The hub is holding too many events. Delete old ones.' };
-      event = { code, createdAt: now, updatedAt: now, revision: 0, removed: new Map(), removedFloor: 0, sources: new Map() };
+      event = {
+        code, createdAt: now, updatedAt: now, revision: 0, removed: new Map(), removedFloor: 0, sources: new Map(),
+        feedID: randomUUID(), feed: [], feedFloor: 0,
+      };
     }
 
     let source = event.sources.get(device);
@@ -222,7 +355,7 @@ export class Store {
       if (event.sources.size >= limits.sourcesPerEvent) return { error: 'Too many iPads have sent results for this event.' };
       source = {
         device, station: '', raceName: '', timeZone: 'UTC',
-        startTime: null, startChangedAt: 0, updatedAt: now, crossings: new Map(),
+        startTime: null, startChangedAt: 0, joinedAt: now, updatedAt: now, crossings: new Map(),
       };
     }
 
@@ -238,7 +371,10 @@ export class Store {
       if (previous && sameCrossing(previous, crossing)) {
         next.set(crossing.id, previous);
       } else {
-        next.set(crossing.id, { ...crossing, rev: revision });
+        // `at` is when it last changed; `fed` what the feed has said about it.
+        const stored = { ...crossing, rev: revision, at: now };
+        if (previous?.fed) stored.fed = previous.fed;
+        next.set(crossing.id, stored);
         changed = true;
       }
     }
@@ -249,6 +385,7 @@ export class Store {
 
     const gone = [...source.crossings.keys()].filter((id) => !next.has(id));
     if (gone.length > 0) changed = true;
+    const goneAfterFeed = gone.map((id) => source.crossings.get(id)).filter((crossing) => crossing.fed);
 
     const station = text(push.station, 40) || 'Station';
     if (station !== source.station) {
@@ -280,6 +417,10 @@ export class Store {
       for (const id of gone) event.removed.set(id, revision);
       for (const id of next.keys()) event.removed.delete(id);
       this.#trimRemovals(event);
+    }
+    // Whoever has passed a result on has to hear that it has been removed.
+    for (const crossing of goneAfterFeed) {
+      this.#addToFeed(event, { kind: 'gone', device, id: crossing.id, was: crossing.fed });
     }
     // Saved even when nothing changed, so "last heard from" survives a restart.
     this.#scheduleSave(code);
@@ -316,6 +457,7 @@ export class Store {
 
   #summary(event) {
     const sources = [...event.sources.values()];
+    const labels = this.#labels(event);
     // The start time in force is the one that was set most recently on any iPad.
     const starter = sources
       .filter((source) => source.startTime !== null)
@@ -328,19 +470,41 @@ export class Store {
       updatedAt: event.updatedAt,
       revision: event.revision,
       startTime: starter ? starter.startTime : null,
-      startFrom: starter ? starter.station : null,
+      startFrom: starter ? labels.get(starter.device) : null,
       timeZone: this.#timeZone(sources),
       count: sources.reduce((sum, source) => sum + source.crossings.size, 0),
       stations: sources
         .map((source) => ({
+          // `station` is the name the iPad was given, which another iPad may
+          // have too; `label` is that name made unique within the event.
           station: source.station,
+          label: labels.get(source.device),
           device: source.device,
           count: source.crossings.size,
           updatedAt: source.updatedAt,
           startTime: source.startTime,
         }))
-        .sort((a, b) => a.station.localeCompare(b.station) || a.device.localeCompare(b.device)),
+        .sort((a, b) => a.label.localeCompare(b.label) || a.device.localeCompare(b.device)),
     };
+  }
+
+  /**
+   * A name for each iPad that no other iPad at the event has. Two iPads both
+   * called "Finish" become "Finish" and "Finish (2)", in the order in which
+   * they first sent results, so the names do not swap when a third joins.
+   */
+  #labels(event) {
+    const inOrder = [...event.sources.values()]
+      .sort((a, b) => (a.joinedAt ?? 0) - (b.joinedAt ?? 0) || a.device.localeCompare(b.device));
+    const taken = new Map();
+    const labels = new Map();
+    for (const source of inOrder) {
+      const name = source.station.toLowerCase();
+      const count = (taken.get(name) ?? 0) + 1;
+      taken.set(name, count);
+      labels.set(source.device, count === 1 ? source.station : `${source.station} (${count})`);
+    }
+    return labels;
   }
 
   /** The time zone to show times in: the one most iPads at this event are set to. */
@@ -410,6 +574,9 @@ export class Store {
       removed: new Map(),
       removedFloor: wholeNumber(saved.removedFloor),
       sources: new Map(),
+      feedID: typeof saved.feedID === 'string' && saved.feedID !== '' ? saved.feedID : randomUUID(),
+      feed: [],
+      feedFloor: wholeNumber(saved.feedFloor),
     };
     for (const entry of Array.isArray(saved.removed) ? saved.removed : []) {
       if (Array.isArray(entry) && typeof entry[0] === 'string') event.removed.set(entry[0], wholeNumber(entry[1]));
@@ -419,7 +586,11 @@ export class Store {
       const crossings = new Map();
       for (const item of Array.isArray(raw.crossings) ? raw.crossings : []) {
         const crossing = cleanCrossing(item);
-        if (crossing) crossings.set(crossing.id, { ...crossing, rev: Math.min(wholeNumber(item.rev), event.revision) });
+        if (!crossing) continue;
+        const stored = { ...crossing, rev: Math.min(wholeNumber(item.rev), event.revision), at: Number(item.at) || 0 };
+        const fed = cleanFed(item.fed);
+        if (fed) stored.fed = fed;
+        crossings.set(crossing.id, stored);
       }
       event.sources.set(raw.device, {
         device: raw.device,
@@ -428,11 +599,28 @@ export class Store {
         timeZone: typeof raw.timeZone === 'string' ? raw.timeZone : 'UTC',
         startTime: numberOrNull(raw.startTime, 0, latestTime),
         startChangedAt: Number(raw.startChangedAt) || 0,
+        joinedAt: Number(raw.joinedAt) || 0,
         updatedAt: Number(raw.updatedAt) || 0,
         crossings,
       });
     }
+    for (const raw of Array.isArray(saved.feed) ? saved.feed : []) {
+      const entry = this.#reviveFeedEntry(raw, event);
+      if (entry) event.feed.push({ seq: event.feedFloor + event.feed.length + 1, ...entry });
+    }
     return event;
+  }
+
+  #reviveFeedEntry(raw, event) {
+    if (raw === null || typeof raw !== 'object') return null;
+    if (!isDeviceID(raw.device) || typeof raw.id !== 'string' || !idPattern.test(raw.id)) return null;
+    const was = cleanFed(raw.was);
+    if (raw.kind === 'gone') return was ? { kind: 'gone', device: raw.device, id: raw.id, was } : null;
+    const now = cleanFed(raw);
+    if (raw.kind !== 'read' || !now || now.bib === '') return null;
+    const entry = { kind: 'read', device: raw.device, id: raw.id, bib: now.bib, time: now.time };
+    if (was) entry.was = was;
+    return entry;
   }
 
   #serialize(event) {
@@ -447,6 +635,9 @@ export class Store {
         ...source,
         crossings: [...source.crossings.values()],
       })),
+      feedID: event.feedID,
+      feedFloor: event.feedFloor,
+      feed: event.feed.map(({ seq, ...entry }) => entry),
     });
   }
 
