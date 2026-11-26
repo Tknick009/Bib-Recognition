@@ -47,7 +47,9 @@ for (const shell of (process.env.BIBTIMER_POWERSHELL ?? 'pwsh,powershell').split
       fromFile: (args) => [shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args]],
       // The program fetched from the hub and run without ever being a file:
       // the line the results page gives the operator to paste, word for word.
-      fromHub: (base, args) => [shell, ['-NoProfile', '-NonInteractive', '-Command',
+      // Windows does not let script files run unless it has been set up to
+      // ("Restricted"); the pasted line has to work all the same.
+      fromHub: (base, args) => [shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-Command',
         "[Net.ServicePointManager]::SecurityProtocol = 'Tls12'; " +
         `& ([scriptblock]::Create((Invoke-RestMethod -UseBasicParsing '${base}/runscore.ps1'))) ${args.join(' ')}`]],
     });
