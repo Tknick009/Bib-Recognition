@@ -352,7 +352,7 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
     // the notes can show it once instead of once per result.
     if (entry.unsynced) {
       notes.push(`${entry.station} is not synced to a time server: its times come from the iPad's own clock and may be off. ` +
-        'Once its clock is set (the badge at the top of its screen says so), correct its times: on the camera page under Race, in the app under Race setup.');
+        'The camera page fills in the exact times by itself once its clock is set, if it has stayed open since; in the app, correct them under Race setup.');
     }
     return { seq: entry.seq, line: writer.line(entry.bib, entry.time, entry.station), note: notes.join(' ') };
   }

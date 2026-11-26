@@ -44,8 +44,15 @@ const timeZone = (() => {
 
 // The clock everything is timed by: it only ever runs forward, evenly.
 const localNow = () => performance.now();
-// What to add to it to get the iPad's own idea of the time of day.
-const deviceOffset = () => Date.now() - performance.now();
+// What has to be added to it, at this instant, to get the iPad's own idea
+// of the time of day.
+const clocksApartNow = () => Date.now() - performance.now();
+// The same as it was when the two clocks were last compared (see
+// `checkClock`), which is what times are worked out with. If the two differ
+// by much, one of the clocks has jumped: the even-running one has stood
+// still (the iPad slept), or the time of day has been set.
+let clocksApart = clocksApartNow();
+const deviceOffset = () => clocksApart;
 
 // How many results the list shows unless asked for all of them.
 const rowsShown = 80;
@@ -160,9 +167,11 @@ function onSameDay(seconds, time) {
   return date.getTime() / 1000;
 }
 
+/** The time now: { time, source, error } as from the clock, and `local`, the same moment on the even-running clock. */
 function now() {
   checkClock();
-  return clock.at(localNow(), deviceOffset());
+  const local = localNow();
+  return { ...clock.at(local, deviceOffset()), local };
 }
 
 // ---- The clock ----
@@ -180,33 +189,45 @@ function refine(path, sent, received) {
   }
 }
 
-const keeper = new TimeKeeper({ link, clock, localNow, refine, onChange: () => clockChanged() });
+const keeper = new TimeKeeper({ link, clock, localNow, refine, stamp: clocksApartNow, onChange: () => clockChanged() });
 
-// The difference between the two clocks of the iPad when they were last
-// compared. If it changes, the even-running clock has stood still (the iPad
-// slept) or the time of day has been set, and what the results site said
-// about the clock no longer holds.
-let clocksApart = deviceOffset();
+// Results timed by the iPad's own clock since this page was loaded and since
+// its clocks last jumped: their identifiers, each with its moment on the
+// even-running clock. Once the results site has set the clock, those moments
+// can be turned into exact times.
+const untimed = new Map();
 
 function checkClock() {
-  const apart = deviceOffset();
-  if (Math.abs(apart - clocksApart) < 200) return;
+  const apart = clocksApartNow();
+  const jumped = Math.abs(apart - clocksApart) >= 200;
+  // Small stops add up as well: what the results site said about the clock
+  // holds only while the two clocks are as far apart as they were then.
+  const outdated = clock.isSynced && keeper.fixStamp !== null && Math.abs(apart - keeper.fixStamp) >= 200;
+  if (!jumped && !outdated) {
+    // The two clocks wander apart slowly; that is no jump.
+    clocksApart = apart;
+    return;
+  }
+  // Bibs that are being followed were seen by the clocks as they were. They
+  // get their times now, before anything is changed.
+  flushTracks();
   clocksApart = apart;
-  // Every time would now be wrong by as much as the clock jumped: better
-  // the iPad's own clock, and marked as such, until the results site has
-  // been asked again, which takes a second.
+  untimed.clear();
+  // Every time would from now on be wrong by as much as the clock jumped:
+  // better the iPad's own clock, and marked as such, until the results site
+  // has been asked again, which takes a second.
   clock.forget();
   keeper.sync({ replace: true });
 }
 
 function clockChanged() {
-  if (!keeper.syncing && keeper.lastSync !== null) {
-    clocksApart = deviceOffset();
+  if (!keeper.syncing) {
     try {
       performance.clearResourceTimings();
     } catch {
       // Not there in every browser.
     }
+    giveExactTimes();
   }
   drawClock();
   drawDeviceClock();
@@ -259,7 +280,13 @@ const uploader = new Uploader({
     race.unsent = false;
     storage.save(5000);
   },
+  onHeard: () => storage.save(5000),
 });
+
+/** Notes that results have been deleted on this iPad, so that the results site is told even if the page is loaded again first. */
+function noteDeleted(race, ids) {
+  race.deleted = [...new Set([...(race.deleted ?? []), ...ids])].slice(-20_000);
+}
 
 function drawSending() {
   const chip = $('send-chip');
@@ -292,7 +319,10 @@ function describeSending() {
   const used = `About ${uploader.bytes < 100_000 ? `${Math.max(1, Math.round(uploader.bytes / 1000))} KB` : `${(uploader.bytes / 1e6).toFixed(1)} MB`} has been sent since this page was opened.`;
   if (uploader.failures > 0) return `${uploader.problem} ${waiting} ${waiting === 1 ? 'result is' : 'results are'} waiting on this iPad. ${used}`;
   if (uploader.lastSuccess === null) return 'Nothing has been sent yet.';
-  return `The results site has ${waiting === 0 ? 'everything' : `all but ${waiting}`}; it last answered at ${shownTime(uploader.lastSuccess / 1000, 0)}. ${used}`;
+  const extra = race ? uploader.extra(race) : 0;
+  return `The results site has ${waiting === 0 ? 'everything' : `all but ${waiting}`}; it last answered at ${shownTime(uploader.lastSuccess / 1000, 0)}. ` +
+    (extra > 0 ? `It also holds ${extra} ${extra === 1 ? 'result' : 'results'} from this iPad that ${extra === 1 ? 'is' : 'are'} no longer on the iPad; ${extra === 1 ? 'it stays' : 'they stay'} there. ` : '') +
+    used;
 }
 
 // ---- The race ----
@@ -478,15 +508,21 @@ const trial = {
 };
 const trialLooks = 3;
 
+let readerWas = 'idle';
+
 const reader = new Reader({
   onChange: () => {
     if (reader.state === 'loading' && reader.preparing && trial.current) {
       trial.current.program = reader.program;
       trial.note(trial.current);
-    } else if (reader.state === 'ready' && trial.current && trial.looks === 0) {
+    } else if (reader.state === 'ready' && readerWas !== 'ready' && trial.current) {
+      // Up, whether for the first time or after starting itself afresh:
+      // its first looks are watched again.
       trial.current.program = reader.program;
+      trial.looks = 0;
       trial.note(null);
     }
+    readerWas = reader.state;
     if (reader.state === 'ready' && reader.program === 'quick') keepPlainReaderToo();
     drawReader();
     nextLook();
@@ -578,7 +614,8 @@ function drawReader() {
   } else if (reader.state === 'ready') {
     const rate = looksPerSecond();
     chip.textContent = !camera.running ? 'Bib reader ready'
-      : rate === null ? 'Reading' : `Reading · ${rate < 10 ? rate.toFixed(1) : Math.round(rate)} looks a second`;
+      : camera.muted || framelessChecks > 0 ? 'No picture from the camera'
+        : rate === null ? 'Reading' : `Reading · ${rate < 10 ? rate.toFixed(1) : Math.round(rate)} looks a second`;
     clearNotice('reader');
   } else if (reader.state === 'failed') {
     chip.textContent = 'Bib reader not working';
@@ -632,6 +669,21 @@ camera.onEnded = () => {
     : 'The camera has stopped.');
 };
 
+camera.onMuted = (muted) => {
+  if (view !== 'stage') return;
+  if (muted) {
+    notice('camera', 'The camera has been paused, by Safari or because another app is using it, so nothing is being read. Times can still be taken with Mark.', { level: 'bad' });
+  } else {
+    clearNotice('camera');
+    nextLook();
+  }
+  drawReader();
+};
+
+// How many times in a row a picture was waited for in vain while the camera
+// said it was on.
+let framelessChecks = 0;
+
 /** Looks at the next picture from the camera, if everything is ready for it. */
 function nextLook() {
   if (looking || waitingForFrame || view !== 'stage' || document.hidden) return;
@@ -644,6 +696,11 @@ function nextLook() {
 }
 
 function look(time) {
+  if (framelessChecks > 0) {
+    // Pictures are coming again.
+    framelessChecks = 0;
+    $('camera-off').hidden = true;
+  }
   const width = camera.width;
   const height = camera.height;
   if (!width || !height || reader.state !== 'ready' || view !== 'stage') {
@@ -697,16 +754,25 @@ function took(time, plan, result, width, height) {
   const texts = toPictureFractions(result.texts, plan.zone, width, height);
   const { changes, overlays } = session.take(time, texts);
   overlay.show(overlays, time);
+  if (storage.settings.savePhotos && session.recording) rememberTrackPhotos(overlays);
   for (const change of changes) applyChange(change);
+}
+
+/** Gives every bib that is being followed its time now (see `Session.flush`). */
+function flushTracks() {
+  for (const change of session.flush()) applyChange(change);
 }
 
 /** Takes in what a look, or the end of recording, did to the results. */
 function applyChange(change) {
   if (change.change === 'added') {
     fresh.add(change.id);
-    if (storage.settings.savePhotos && change.box) keepBibPhoto(change.id, change.box);
+    if (change.clock === 'device') untimed.set(change.id, change.local);
+    if (storage.settings.savePhotos) keepPhotoOf(change);
     raceChanged();
   } else if (change.change === 'removed') {
+    noteDeleted(storage.race, [change.id]);
+    untimed.delete(change.id);
     storage.deletePhotos([change.id]);
     raceChanged();
   } else if (change.change === 'updated') {
@@ -716,36 +782,86 @@ function applyChange(change) {
   }
 }
 
-function saveCanvasAsPhoto(id, canvas) {
+/** Gives a canvas back to the browser at once. Safari allows a page only so much canvas, and is slow to notice what is no longer used. */
+function release(canvas) {
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+function saveCanvasAsPhoto(id, canvas, { thenRelease = false } = {}) {
   try {
     canvas.toBlob((blob) => {
       if (blob) storage.savePhoto(id, blob);
+      if (thenRelease) release(canvas);
     }, 'image/jpeg', 0.6);
   } catch {
     // No photo, then.
   }
 }
 
-/** Keeps the part of the picture last looked at that shows this bib and its runner. */
-function keepBibPhoto(id, box) {
-  if (!lastLook) return;
+/**
+ * Draws onto a canvas the part of the picture last looked at that shows this
+ * bib and its runner. False if there is nothing to draw.
+ */
+function cutPhoto(canvas, box) {
+  if (!lastLook) return false;
   const { zone, width, height } = lastLook;
   const region = photoRegion(box);
   const left = Math.max(0, region.x * width - zone.x);
   const top = Math.max(0, region.y * height - zone.y);
   const right = Math.min(zone.width, (region.x + region.width) * width - zone.x);
   const bottom = Math.min(zone.height, (region.y + region.height) * height - zone.y);
-  if (right - left < 8 || bottom - top < 8) return;
+  if (right - left < 8 || bottom - top < 8) return false;
   const shrink = Math.min(1, 360 / Math.max(right - left, bottom - top));
-  const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round((right - left) * shrink));
   canvas.height = Math.max(1, Math.round((bottom - top) * shrink));
   try {
     canvas.getContext('2d').drawImage(scanCanvas, left, top, right - left, bottom - top, 0, 0, canvas.width, canvas.height);
   } catch {
-    return;
+    return false;
   }
-  saveCanvasAsPhoto(id, canvas);
+  return true;
+}
+
+// A small picture of each bib that is being followed, as it was when last
+// read. A result is often recorded a moment after its bib was last read
+// (when it has left the picture without being seen to cross the line): the
+// picture kept with it has to be this one, not what the camera shows by then.
+const trackPhotos = new Map();
+
+function rememberTrackPhotos(overlays) {
+  const at = performance.now();
+  for (const seen of overlays) {
+    let kept = trackPhotos.get(seen.id);
+    if (!kept) {
+      kept = { canvas: document.createElement('canvas'), at };
+      trackPhotos.set(seen.id, kept);
+    }
+    kept.at = at;
+    if (!cutPhoto(kept.canvas, seen.box)) forgetTrackPhoto(seen.id);
+  }
+  // Longer than a bib is followed after it was last read.
+  for (const [id, kept] of trackPhotos) {
+    if (at - kept.at > 6000) forgetTrackPhoto(id);
+  }
+}
+
+function forgetTrackPhoto(id) {
+  const kept = trackPhotos.get(id);
+  if (!kept) return;
+  release(kept.canvas);
+  trackPhotos.delete(id);
+}
+
+/** Keeps a photo with a result the camera has just made. */
+function keepPhotoOf(change) {
+  const kept = trackPhotos.get(change.trackID);
+  if (kept) {
+    saveCanvasAsPhoto(change.id, kept.canvas);
+  } else if (change.box) {
+    const canvas = document.createElement('canvas');
+    if (cutPhoto(canvas, change.box)) saveCanvasAsPhoto(change.id, canvas, { thenRelease: true });
+  }
 }
 
 /** Keeps the whole picture as it is now, small: for a time taken by hand, to tell afterwards whose it was. */
@@ -760,7 +876,7 @@ function keepScenePhoto(id) {
   } catch {
     return;
   }
-  saveCanvasAsPhoto(id, canvas);
+  saveCanvasAsPhoto(id, canvas, { thenRelease: true });
 }
 
 // ---- Recording ----
@@ -818,6 +934,7 @@ function addByHand(bib) {
   const stamp = now();
   const crossing = manualCrossing(bib, stamp.time, stamp);
   race.crossings.push(crossing);
+  if (stamp.source === 'device') untimed.set(crossing.id, stamp.local);
   fresh.add(crossing.id);
   if (storage.settings.savePhotos) keepScenePhoto(crossing.id);
   raceChanged();
@@ -1002,6 +1119,8 @@ function saveEdit() {
     if (!time) return problem('Write the time like 10:23:45 or 10:23:45.67.');
     crossing.time = onSameDay(crossing.time, time);
     crossing.timing = 'manual';
+    // A time typed in by hand is not one for the page to work out afresh.
+    untimed.delete(crossing.id);
   }
   crossing.note = cleanName($('edit-note').value, 200);
   race.crossings[index] = crossing;
@@ -1016,6 +1135,8 @@ function deleteEdited() {
   const id = editing.id;
   const index = race.crossings.findIndex((item) => item.id === id);
   if (index >= 0) race.crossings.splice(index, 1);
+  noteDeleted(race, [id]);
+  untimed.delete(id);
   storage.deletePhotos([id]);
   closeEdit();
   raceChanged();
@@ -1039,48 +1160,54 @@ function drawRoster() {
   $('roster-only').checked = race.restrictToRoster && count > 0;
 }
 
-/** How many results were timed by the iPad's own clock, and how far that clock is from the results site's now. */
-function deviceClockResults() {
+/**
+ * Gives results that were timed by the iPad's own clock their exact times,
+ * now that the results site has set the clock. This can be done for results
+ * taken since the page was loaded and since the iPad's clocks last jumped:
+ * the moment of each on the even-running clock is known, and that clock has
+ * run on without a break since.
+ */
+function giveExactTimes() {
   const race = storage.race;
-  if (!race || !clock.isSynced) return null;
-  const count = race.crossings.reduce((sum, crossing) => sum + (crossing.clock === 'device' ? 1 : 0), 0);
-  if (count === 0) return null;
-  const local = localNow();
-  return { count, shift: clock.at(local, 0).time - (local + deviceOffset()) / 1000 };
-}
-
-function drawDeviceClock() {
-  const found = deviceClockResults();
-  const paragraph = $('device-clock');
-  paragraph.hidden = found === null;
-  $('fix-times').hidden = found === null;
-  if (!found) {
-    clearNotice('device-clock');
-    return;
-  }
-  const size = Math.abs(found.shift);
-  const text = `${found.count} ${found.count === 1 ? 'result was' : 'results were'} timed by the iPad’s own clock, which is ` +
-    `${size < 0.0995 ? `${Math.round(size * 1000)} ms` : `${size.toFixed(2)} s`} ${found.shift >= 0 ? 'behind' : 'ahead of'} the results site’s.`;
-  paragraph.textContent = `${text} Correcting them moves their times by that much.`;
-  notice('device-clock', text, { level: 'info', action: 'Correct them', run: fixDeviceClockTimes, dismiss: true, about: String(found.count) });
-}
-
-function fixDeviceClockTimes() {
-  const race = storage.race;
-  const found = deviceClockResults();
-  if (!race || !found) return;
-  // The iPad's clock may have wandered a little since each time was taken.
-  const error = (clock.errorAt(localNow()) + 100) / 1000;
-  race.crossings = race.crossings.map((crossing) => (crossing.clock !== 'device' ? crossing : {
-    ...crossing,
-    time: crossing.time + found.shift,
-    firstSeen: crossing.firstSeen == null ? null : crossing.firstSeen + found.shift,
-    lastSeen: crossing.lastSeen == null ? null : crossing.lastSeen + found.shift,
-    clock: 'ntp',
-    clockError: error,
-  }));
-  clearNotice('device-clock');
+  if (!race || !clock.isSynced || untimed.size === 0) return;
+  let count = 0;
+  race.crossings = race.crossings.map((crossing) => {
+    const local = untimed.get(crossing.id);
+    if (local === undefined || crossing.clock !== 'device') return crossing;
+    untimed.delete(crossing.id);
+    const exact = clock.at(local, 0);
+    const shift = exact.time - crossing.time;
+    count += 1;
+    return {
+      ...crossing,
+      time: exact.time,
+      firstSeen: crossing.firstSeen == null ? null : crossing.firstSeen + shift,
+      lastSeen: crossing.lastSeen == null ? null : crossing.lastSeen + shift,
+      clock: 'ntp',
+      clockError: exact.error,
+    };
+  });
+  if (count === 0) return;
+  notice('exact', count === 1
+    ? 'One result that was taken while the clock was not set has been given its exact time.'
+    : `${count} results that were taken while the clock was not set have been given their exact times.`,
+  { level: 'info', lasts: 15_000, dismiss: true });
   raceChanged();
+}
+
+/** Says, on the race sheet, how many results still carry the iPad's own time and what becomes of them. */
+function drawDeviceClock() {
+  const race = storage.race;
+  const paragraph = $('device-clock');
+  const marked = race ? race.crossings.filter((crossing) => crossing.clock === 'device') : [];
+  paragraph.hidden = marked.length === 0;
+  if (marked.length === 0) return;
+  const soon = marked.filter((crossing) => untimed.has(crossing.id)).length;
+  const lost = 'the page was loaded again, or the iPad slept, before the results site could set the clock, so the page cannot put them right. Check them against your backup.';
+  paragraph.textContent = `${marked.length} ${marked.length === 1 ? 'result was' : 'results were'} timed by the iPad’s own clock and ${marked.length === 1 ? 'is' : 'are'} marked “iPad clock”. ` +
+    (soon === marked.length ? 'The exact times are filled in as soon as the results site has set the clock.'
+      : soon === 0 ? `For ${marked.length === 1 ? 'it' : 'them'}, ${lost}`
+        : `${soon} of them get their exact times as soon as the results site has set the clock. For the rest, ${lost}`);
 }
 
 function openRace() {
@@ -1286,7 +1413,19 @@ function heartbeat() {
   if (waitingForFrame && performance.now() - waitingSince > 2500) {
     waitingForFrame();
     waitingForFrame = null;
-    camera.resume().then(nextLook);
+    framelessChecks += 1;
+    if (framelessChecks === 2 && !cameraStarting) {
+      // Several seconds without a picture, though the camera says it is on
+      // (Safari does that to a camera it has paused): start it afresh.
+      startCamera();
+    } else {
+      if (framelessChecks === 4) {
+        showCameraOff('The camera is on but sends no picture, so nothing is being read. Tap to start it again; if another app is using the camera, close that app first. ' +
+          'Times can still be taken with Mark.');
+      }
+      camera.resume().then(nextLook);
+    }
+    drawReader();
   } else {
     nextLook();
   }
@@ -1344,6 +1483,8 @@ function leaveStage() {
   $('main-tools').hidden = false;
   if (waitingForFrame) waitingForFrame();
   waitingForFrame = null;
+  framelessChecks = 0;
+  for (const id of [...trackPhotos.keys()]) forgetTrackPhoto(id);
   camera.stop();
   wakeLock?.release?.().catch(() => {});
   wakeLock = null;
@@ -1624,7 +1765,6 @@ function wire() {
     session.configure(storage.settings, storage.race);
     storage.save();
   });
-  $('fix-times').addEventListener('click', fixDeviceClockTimes);
   $('csv-simple').addEventListener('click', () => downloadCSV('simple'));
   $('csv-detailed').addEventListener('click', () => downloadCSV('detailed'));
   $('switch-race').addEventListener('click', () => {
@@ -1637,7 +1777,10 @@ function wire() {
     const race = storage.race;
     const count = race.crossings.length;
     if (count === 0 || !confirm(`Delete all ${count} results of “${race.name}” from this iPad and from the results site?`)) return;
-    storage.deletePhotos(race.crossings.map((crossing) => crossing.id));
+    const ids = race.crossings.map((crossing) => crossing.id);
+    storage.deletePhotos(ids);
+    noteDeleted(race, ids);
+    for (const id of ids) untimed.delete(id);
     race.crossings = [];
     raceChanged();
   });
@@ -1668,19 +1811,25 @@ function wire() {
     askForKey();
   });
 
+  // The page is put away (another app, another tab, the screen locked) or
+  // closed. Bibs that are being followed get their times now: afterwards may
+  // be too late. Everything is saved and what has not been sent is handed
+  // to the browser to send.
+  const putAway = () => {
+    flushTracks();
+    noteAlive();
+    storage.saveNow();
+    uploader.sendOff();
+  };
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       hiddenAt = Date.now();
-      noteAlive();
-      uploader.sendOff();
+      putAway();
     } else {
       cameBack();
     }
   });
-  window.addEventListener('pagehide', () => {
-    noteAlive();
-    uploader.sendOff();
-  });
+  window.addEventListener('pagehide', putAway);
   window.addEventListener('online', () => {
     keeper.sync();
     uploader.retryNow();
@@ -1700,6 +1849,8 @@ function keyFromAddress() {
 }
 
 async function begin() {
+  // First of all, so that a key in the address is out of sight whatever happens next.
+  const fromAddress = keyFromAddress();
   const missing = whatIsMissing();
   if (missing) {
     showTrouble(missing[0], missing[1], { again: false });
@@ -1711,11 +1862,21 @@ async function begin() {
   }
   wire();
   copyKept = keepCopy();
-  const fromAddress = keyFromAddress();
   const kept = storedKey();
-  if (fromAddress) signIn(fromAddress);
-  else if (kept) signIn(kept, { stored: true });
-  else askForKey();
+  if (fromAddress) {
+    signIn(fromAddress);
+  } else if (kept && storage.race) {
+    // A race is under way on this iPad (the page has been loaded again, as
+    // Safari does now and then): straight back to it, without waiting for
+    // the results site to answer. A key that is no longer right shows when
+    // the first results are sent.
+    link.key = kept;
+    enter();
+  } else if (kept) {
+    signIn(kept, { stored: true });
+  } else {
+    askForKey();
+  }
 }
 
 // What the page is doing, for whoever is looking into a problem (and for tests).

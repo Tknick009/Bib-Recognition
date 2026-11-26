@@ -44,8 +44,15 @@ function crossing(id, bib, seconds, extra = {}) {
   };
 }
 
+let races = 0;
+
+/** A race as the page keeps it. Each has an identifier of its own on the iPad, as each race set up on the page has. */
 function race(code, crossings) {
-  return { id: code, name: 'Test Race', code, station: 'Finish', createdAt: start, startTime: null, crossings, roster: [], restrictToRoster: false, unsent: true };
+  races += 1;
+  return {
+    id: `race-${races}`, name: 'Test Race', code, station: 'Finish', createdAt: start, startTime: null, crossings, deleted: [],
+    roster: [], restrictToRoster: false, unsent: true,
+  };
 }
 
 /** A link to the hub that notes every upload and can be cut. */
@@ -171,6 +178,45 @@ test('a fix that can no longer be trusted is replaced, a good one is kept', asyn
   assert.ok(clock.fix.error >= 200, 'and how rough it is, is known');
 });
 
+test('what was measured before the clock jumped is not used', async () => {
+  const local = () => performance.now();
+  const clock = new RaceClock(local);
+  // The difference between the device's two clocks; it changes when one of them jumps.
+  let apart = 1000;
+  let asked = 0;
+  const { link } = linkTo();
+  const keeper = new TimeKeeper({
+    link, clock, localNow: local, stamp: () => apart,
+    wait: async () => {
+      asked += 1;
+      // The device sleeps for a minute after the second question.
+      if (asked === 2) apart += 60_000;
+    },
+  });
+  assert.equal(await keeper.sync({ samples: 4 }), true);
+  assert.equal(keeper.fixStamp, 61_000, 'the measurement in use was made after the jump');
+
+  // If every measurement was made before the jump, none is used.
+  const other = new RaceClock(local);
+  let gap = 0;
+  const late = new TimeKeeper({ link, clock: other, localNow: local, stamp: () => gap, wait: async () => {} });
+  const running = late.sync({ samples: 2 });
+  await running.then(() => {}, () => {});
+  assert.equal(other.isSynced, true);
+  gap = 5000;
+  const more = new TimeKeeper({
+    link, clock: new RaceClock(local), localNow: local,
+    stamp: (() => {
+      let calls = 0;
+      // Each sample is stamped 0; by the time they are weighed, the clocks are 5 s apart.
+      return () => ((calls += 1) <= 2 ? 0 : 5000);
+    })(),
+    wait: async () => {},
+  });
+  assert.equal(await more.sync({ samples: 2 }), false);
+  assert.match(more.problem, /jumped/);
+});
+
 test('a clock that jumps while it is being set is set once more afterwards', async () => {
   const local = () => performance.now();
   const clock = new RaceClock(local);
@@ -202,7 +248,8 @@ test('everything is sent the first time, and after that only what has changed', 
     await until(() => bibsOnHub('upload-changes')?.length === 2, 'the first upload');
     await until(() => settled.includes('upload-changes'), 'the page to hear that the hub has everything');
     assert.equal(uploads.length, 1);
-    assert.deepEqual([uploads[0].full, uploads[0].crossings.length, uploads[0].station, uploads[0].raceName], [true, 2, 'Finish', 'Test Race']);
+    // Everything this iPad has, but never as "full": that word would tell the hub to drop whatever else it holds.
+    assert.deepEqual([uploads[0].full, uploads[0].crossings.length, uploads[0].station, uploads[0].raceName], [false, 2, 'Finish', 'Test Race']);
     assert.equal(uploader.waiting(theRace, 'Finish', 'UTC'), 0);
     assert.ok(uploader.lastSuccess !== null && uploader.bytes > 0);
     assert.ok(heard.includes(true) && heard.at(-1) === false);
@@ -277,7 +324,7 @@ test('with no connection results wait on the iPad, and go when it is back', asyn
     uploader.retryNow();
     await until(() => bibsOnHub('upload-offline')?.length === 3, 'everything to arrive once the connection is back');
     await until(() => uploader.failures === 0, 'the failure to be forgotten');
-    assert.deepEqual([uploads.length, uploads[0].full], [1, true]);
+    assert.deepEqual([uploads.length, uploads[0].crossings.length], [1, 3]);
   } finally {
     uploader.stop();
   }
@@ -313,9 +360,107 @@ test('a hub that has lost what it had is sent everything again', async () => {
     uploader.poke();
     await until(() => bibsOnHub('upload-lost')?.length === 3, 'the hub to have everything again');
     // The change alone was sent first; the hub's count showed that it lacked the rest.
-    assert.deepEqual(uploads.map((sent) => [sent.full, sent.crossings.length]), [[true, 2], [false, 1], [true, 3]]);
+    assert.deepEqual(uploads.map((sent) => [sent.full, sent.crossings.length]), [[false, 2], [false, 1], [false, 3]]);
   } finally {
     uploader.stop();
+  }
+});
+
+test('a race cleared off the iPad and joined again leaves what the hub holds alone', async () => {
+  // What "Remove this race from this iPad" promises: the results site keeps its copy.
+  const first = linkTo();
+  const original = race('upload-rejoin', [crossing('R1', '61', 10), crossing('R2', '62', 11), crossing('R3', '63', 12)]);
+  const before = new Uploader({ link: first.link, deviceID: device, jobs: () => [{ race: original, station: 'Finish', timeZone: 'UTC' }] });
+  let current = original;
+  const uploader = new Uploader({ link: first.link, deviceID: device, jobs: () => [{ race: current, station: 'Finish', timeZone: 'UTC' }] });
+  uploader.start();
+  try {
+    await until(() => bibsOnHub('upload-rejoin')?.length === 3, 'the first upload');
+    await until(() => !uploader.sending, 'the upload to be over');
+    // The race is taken off the iPad and set up again under the same name, in the same sitting.
+    current = race('upload-rejoin', []);
+    uploader.poke();
+    await pause(1200);
+    assert.deepEqual(bibsOnHub('upload-rejoin'), ['61', '62', '63'], 'nothing was taken off the hub');
+    // New results are added to the old ones.
+    current.crossings.push(crossing('R4', '64', 13));
+    uploader.poke();
+    await until(() => bibsOnHub('upload-rejoin')?.length === 4, 'the new result');
+    assert.deepEqual(bibsOnHub('upload-rejoin'), ['61', '62', '63', '64']);
+  } finally {
+    uploader.stop();
+    before.stop();
+  }
+
+  // The same after the page has been loaded again: a new uploader that knows nothing of the hub.
+  const again = linkTo();
+  const empty = race('upload-rejoin', []);
+  const fresh = new Uploader({ link: again.link, deviceID: device, jobs: () => [{ race: empty, station: 'Finish', timeZone: 'UTC' }] });
+  fresh.start();
+  try {
+    await until(() => again.uploads.length >= 1 && !fresh.sending && fresh.lastSuccess !== null, 'the upload after loading again');
+    assert.deepEqual(bibsOnHub('upload-rejoin'), ['61', '62', '63', '64']);
+    assert.equal(fresh.extra(empty), 4, 'and the page knows that the hub holds four results the iPad has not');
+    assert.equal(fresh.failures, 0);
+    // It does not keep sending because of them.
+    const sent = again.uploads.length;
+    await pause(700);
+    assert.equal(again.uploads.length, sent);
+  } finally {
+    fresh.stop();
+  }
+});
+
+test('an iPad that could not save its last results does not take them off the hub when it is loaded again', async () => {
+  const first = linkTo();
+  const live = race('upload-unsaved', [crossing('S1', '71', 10), crossing('S2', '72', 11), crossing('S3', '73', 12)]);
+  const uploader = new Uploader({ link: first.link, deviceID: device, jobs: () => [{ race: live, station: 'Finish', timeZone: 'UTC' }] });
+  uploader.start();
+  await until(() => bibsOnHub('upload-unsaved')?.length === 3, 'the uploads while the page was open');
+  uploader.stop();
+
+  // The page is loaded again and finds only what was saved before the iPad ran out of room.
+  const again = linkTo();
+  const saved = race('upload-unsaved', [crossing('S1', '71', 10)]);
+  const reloaded = new Uploader({ link: again.link, deviceID: device, jobs: () => [{ race: saved, station: 'Finish', timeZone: 'UTC' }] });
+  reloaded.start();
+  try {
+    await until(() => reloaded.lastSuccess !== null && !reloaded.sending, 'the upload after loading again');
+    assert.deepEqual(bibsOnHub('upload-unsaved'), ['71', '72', '73'], 'the hub still has all three');
+    assert.equal(reloaded.extra(saved), 2);
+    saved.crossings.push(crossing('S4', '74', 13));
+    reloaded.poke();
+    await until(() => bibsOnHub('upload-unsaved')?.length === 4, 'the next result');
+    assert.deepEqual(again.uploads.at(-1).crossings.map((sent) => sent.id), ['S4'], 'and only changes are sent from then on');
+  } finally {
+    reloaded.stop();
+  }
+});
+
+test('a result deleted without a connection is taken off the hub after the page has been loaded again', async () => {
+  const first = linkTo();
+  const live = race('upload-deleted', [crossing('T1', '81', 10), crossing('T2', '82', 11)]);
+  const uploader = new Uploader({ link: first.link, deviceID: device, jobs: () => [{ race: live, station: 'Finish', timeZone: 'UTC' }] });
+  uploader.start();
+  await until(() => bibsOnHub('upload-deleted')?.length === 2, 'the first upload');
+  uploader.stop();
+
+  // Deleted while there was no connection; the page keeps a note of it with the race, and is loaded again.
+  const again = linkTo();
+  const saved = race('upload-deleted', [crossing('T1', '81', 10)]);
+  saved.deleted = ['T2'];
+  const heard = [];
+  const reloaded = new Uploader({
+    link: again.link, deviceID: device, jobs: () => [{ race: saved, station: 'Finish', timeZone: 'UTC' }], onHeard: (done) => heard.push(done.code),
+  });
+  reloaded.start();
+  try {
+    await until(() => bibsOnHub('upload-deleted')?.join() === '81', 'the deletion to reach the hub');
+    await until(() => heard.length === 1, 'the page to hear that it has');
+    assert.deepEqual(saved.deleted, [], 'the note is no longer needed');
+    assert.equal(reloaded.extra(saved), 0);
+  } finally {
+    reloaded.stop();
   }
 });
 
@@ -431,6 +576,37 @@ test('stopping gives bibs still on their way the best time there is', () => {
   assert.deepEqual([theRace.crossings[0].timing, Math.round(theRace.crossings[0].time * 1000 - offset)], ['estimated', 40_300]);
   assert.equal(session.recording, false);
   assert.deepEqual(session.stop(), []);
+});
+
+test('when the page is put away, bibs still on their way get their times at once and following starts afresh', () => {
+  const { session, theRace, offset } = sessionAt();
+  session.start();
+  session.take(40_000, [bibAt('64', 40_000)]);
+  session.take(40_300, [bibAt('64', 40_300)]);
+  const changes = session.flush();
+  assert.deepEqual(changes.map((change) => [change.change, change.bib, change.clock, Math.round(change.local)]), [['added', '64', 'ntp', 40_300]]);
+  assert.ok(Number.isInteger(changes[0].trackID));
+  assert.deepEqual([theRace.crossings[0].timing, Math.round(theRace.crossings[0].time * 1000 - offset)], ['estimated', 40_300]);
+  assert.equal(session.recording, true, 'recording stays on');
+  // The same bib seen again afterwards is not recorded a second time.
+  session.take(41_000, [bibAt('64', 41_000)]);
+  session.take(41_300, [bibAt('64', 41_300)]);
+  assert.equal(theRace.crossings.length, 1);
+  // Before recording there is nothing to give a time to.
+  const idle = sessionAt();
+  idle.session.take(40_000, [bibAt('5', 40_000)]);
+  assert.deepEqual(idle.session.flush(), []);
+});
+
+test('a result taken without the hub\'s clock says when it was on the local clock, so that it can be given its exact time later', () => {
+  const { session, theRace } = sessionAt({ synced: false, deviceOffset: 7000 });
+  session.start();
+  const changes = [];
+  for (let time = 40_000; time <= 42_100; time += 300) changes.push(...session.take(time, [bibAt('8', time)]).changes);
+  const added = changes.find((change) => change.change === 'added');
+  assert.equal(added.clock, 'device');
+  assert.ok(Math.abs(added.local - 40_840) < 2, `${added.local}`);
+  assert.ok(Math.abs(theRace.crossings[0].time * 1000 - (added.local + 7000)) < 1e-6);
 });
 
 test('a number that is corrected after it was recorded is reported as such', () => {

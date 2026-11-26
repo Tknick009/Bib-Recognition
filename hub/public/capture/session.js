@@ -168,12 +168,33 @@ export class Session {
   }
 
   /**
+   * Gives every bib that is being followed the best time there is for it,
+   * now, and starts following afresh: for the moment the page is put away,
+   * or one of the iPad's clocks is found to have jumped. Left to run on, such
+   * bibs would be lost with the page, or timed by a clock that no longer
+   * fits the moments they were seen at. Recording stays on.
+   *
+   * @returns {object[]} what that did to the results (see `take`)
+   */
+  flush() {
+    if (!this.#recording || !this.#race) {
+      this.#tracker.reset();
+      return [];
+    }
+    const changes = this.#tracker.finish().map((event) => this.#apply(event)).filter((change) => change.change !== 'none');
+    this.#ledger.reset();
+    return changes;
+  }
+
+  /**
    * Takes in the texts read in one picture.
    *
    * @param {number} frameTime when the picture was taken, on the local clock, in milliseconds
    * @param {{text: string, confidence: number, box: object}[]} texts boxes as fractions of the whole picture
    * @returns {{changes: object[], overlays: object[]}} `changes` says what happened to the results:
-   *   { change: 'added' | 'updated' | 'removed', id, bib, box, bibChanged }; `overlays` is for drawing.
+   *   { change: 'added' | 'updated' | 'removed', id, bib, box, bibChanged, trackID, local, clock }, where
+   *   `local` is the result's moment on the local clock in milliseconds and `clock` says which clock
+   *   its time of day was worked out with ('ntp' or 'device'); `overlays` is for drawing.
    */
   take(frameTime, texts) {
     const detections = bibDetections(texts, this.#rules, this.#roster);
@@ -206,6 +227,10 @@ export class Session {
     const before = tracked === null ? null : crossings.find((crossing) => crossing.id === tracked)?.bib ?? null;
     const result = this.#ledger.apply(report, crossings, this.#repeatRule);
     const after = result.change === 'updated' ? crossings.find((crossing) => crossing.id === result.id)?.bib ?? null : null;
-    return { change: result.change, id: result.id ?? null, bib: event.bib, box: event.box, bibChanged: result.change === 'updated' && before !== after };
+    return {
+      change: result.change, id: result.id ?? null, bib: event.bib, box: event.box,
+      bibChanged: result.change === 'updated' && before !== after,
+      trackID: event.trackID, local: event.time * 1000, clock: stamp.source,
+    };
   }
 }

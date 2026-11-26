@@ -477,12 +477,40 @@ test('without a connection', async () => {
   await until(async () => (await hubRows(code))?.length === countBefore + 3, 'everything to be sent once the connection is back', 60_000);
   await until(async () => (await state(page)).clock.synced, 'the clock to be set again');
 
-  // The results timed by the device's own clock can be corrected in one go.
-  await until(async () => (await state(page)).notices.includes('device-clock'), 'the page to offer the correction');
-  await page.click('#notices .notice:has-text("own clock") button');
-  now = await state(page);
-  assert.ok(now.results.every((result) => result.clock === 'ntp'));
-  await until(async () => (await hubRows(code)).every((row) => row.clock === 'ntp'), 'the hub to have the corrected times');
+  // The result timed by the device's own clock gets its exact time by itself:
+  // the page knows the moment on its even-running clock, which has not stopped since.
+  now = await until(async () => {
+    const found = await state(page);
+    return found.results.every((result) => result.clock === 'ntp') ? found : null;
+  }, 'the exact times to be filled in');
+  const exact = now.results.find((result) => result.bib === '514');
+  const wanted = (await truth(page)).find((runner) => runner.bib === '514').crossWall;
+  assert.ok(Math.abs(exact.time * 1000 - wanted) < 200, `the exact time is right (${Math.round(exact.time * 1000 - wanted)} ms from the truth)`);
+  assert.ok(exact.clockError !== null && exact.clockError < 0.2);
+  await until(async () => (await hubRows(code)).every((row) => row.clock === 'ntp'), 'the hub to have the exact times');
+});
+
+test('the camera stops sending pictures', async () => {
+  const { page } = shared;
+  // The camera says it is on and sends nothing, as Safari's does when it has been paused.
+  await page.evaluate(() => {
+    window.__scene.frozen = true;
+  });
+  await until(async () => (await page.textContent('#reader-chip')) === 'No picture from the camera', 'the page to say that no picture is coming', 30_000);
+  await page.waitForSelector('#camera-off:not([hidden])', { timeout: 40_000 });
+  assert.match(await page.textContent('#camera-problem'), /no picture/i);
+  await shot(page, 'no-picture');
+  // Times can still be taken by hand meanwhile.
+  const countBefore = (await state(page)).results.length;
+  await page.click('#mark');
+  assert.equal((await state(page)).results.length, countBefore + 1);
+  // Pictures come again: the page carries on by itself, with nobody tapping anything.
+  await page.evaluate(() => {
+    window.__scene.frozen = false;
+  });
+  await until(async () => (await state(page)).reader.looksPerSecond > 0.3 && !(await page.isVisible('#camera-off')), 'reading to go on once pictures come again', 30_000);
+  await run(page, [551], {});
+  assert.ok((await state(page)).results.some((result) => result.bib === '551'));
 });
 
 test('the plain reader', async () => {
@@ -587,6 +615,24 @@ test('second ipad', async () => {
   await twin.goto(`${base}/capture/`);
   await twin.waitForSelector('#trouble:not([hidden])');
   assert.match(await twin.textContent('#trouble-title'), /already open/);
+  await twin.close();
+
+  // The race is cleared off this iPad and joined again: what the hub holds from it stays there.
+  page.on('dialog', (dialog) => dialog.accept());
+  await page.click('#open-race');
+  await page.click('#switch-race');
+  await page.waitForSelector('#setup:not([hidden])');
+  await page.click('#remove-race');
+  await until(() => page.$(`#race-choice option[value="hub:${code}"]`), 'the race to be offered from the hub again');
+  await page.selectOption('#race-choice', `hub:${code}`);
+  await page.click('#setup-form button[type=submit]');
+  await page.waitForSelector('#stage:not([hidden])');
+  await cameraAndReader(page);
+  assert.equal((await state(page)).results.length, 0, 'the iPad starts the race afresh');
+  await page.click('#record');
+  await run(page, [703], {});
+  await until(async () => (await hubRows(code))?.filter((row) => row.station === 'Finish B').length === 3, 'the new result to join the two the hub already had');
+  assert.deepEqual((await hubRows(code)).filter((row) => row.station === 'Finish B').map((row) => row.bib), ['701', '702', '703']);
   await context.close();
 });
 

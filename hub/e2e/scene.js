@@ -8,7 +8,8 @@
   canvas.height = height;
   const context = canvas.getContext('2d');
   const runners = [];
-  const scene = { runners, speed: 0.25, lineY: 0.62, width, height, frames: 0, asked: 0 };
+  // `frozen`: the picture stands still, as when a camera stops sending pictures without saying so.
+  const scene = { runners, speed: 0.25, lineY: 0.62, width, height, frames: 0, asked: 0, frozen: false };
   window.__scene = scene;
 
   // Runners enter above the picture and run down it. `gap` is the time between them in ms.
@@ -25,6 +26,10 @@
 
   const shirts = ['#1d4ed8', '#b91c1c', '#15803d', '#7c3aed', '#c2410c', '#0f766e'];
   function draw() {
+    if (scene.frozen) {
+      requestAnimationFrame(draw);
+      return;
+    }
     const now = performance.now();
     scene.frames += 1;
     context.fillStyle = '#6b7280';

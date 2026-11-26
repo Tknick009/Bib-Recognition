@@ -433,7 +433,7 @@ test('the feed refuses what it cannot do', async () => {
   const unsynced = await (await call(`/api/events/no-start/runscore?settle=0&devices=${deviceB}`)).json();
   assert.deepEqual(unsynced.entries.map((entry) => entry.line), ['RSBI,8,00:00:20.00,Start', 'RSBI,9,00:00:21.00,Start']);
   assert.equal(unsynced.entries[0].note, "Start is not synced to a time server: its times come from the iPad's own clock and may be off. " +
-    'Once its clock is set (the badge at the top of its screen says so), correct its times: on the camera page under Race, in the app under Race setup.');
+    'The camera page fills in the exact times by itself once its clock is set, if it has stayed open since; in the app, correct them under Race setup.');
   assert.equal(unsynced.entries[1].note, unsynced.entries[0].note);
 
   // Nonsense settings fall back to the usual ones.

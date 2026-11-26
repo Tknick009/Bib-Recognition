@@ -228,10 +228,15 @@ itself when it opens, every five minutes, and whenever the iPad comes back
 from sleep or the connection returns.
 
 **Poor signal at the venue?** The clock only needs the connection now and
-then. If results do get timed by the iPad's own clock, the page offers to
-**correct them** in one go as soon as it has reached the site again: it knows
-how far the iPad's clock is from the site's and shifts those results by that
-much.
+then: once set, it stays set while the page is open, and the badge allows
+for it drifting by up to seven hundredths of a second an hour until it is set
+again. If results do get timed by the iPad's own
+clock (the page was loaded again, or the iPad slept, with no connection), the
+page **fills in their exact times by itself** as soon as it has reached the
+site again. It can do that as long as it has stayed open since: it knows the
+moment of each result on its own even-running clock. Results it cannot put
+right any more stay marked *iPad clock*, and the Race sheet says how many
+there are.
 
 ### Record
 
@@ -290,7 +295,9 @@ something else. The page is built to come back as it was:
   from when to when nothing was read.
 - It opens **without a connection** too, from the copy kept on the iPad.
 
-Results are also on the site as soon as they are sent. After the race,
+Results are also on the site as soon as they are sent, and an iPad never
+takes anything off the site that it has not itself deleted: not when its page
+is loaded again, and not when a race is cleared off the iPad. After the race,
 download the CSV files from the results page: Safari may clear what a site has
 kept on an iPad if the site is not visited for some weeks.
 
@@ -558,9 +565,10 @@ runners at a few looks a second: expect one or two tenths. Results marked
 *estimated* can be off by a second or so.
 
 **The camera's delay.** A picture takes a moment to get from the lens to the
-page, and Safari does not say how long. The page takes off 60 ms, a typical
-figure; the true one for your iPad may differ by a few hundredths, the same
-for every runner. It can be changed under Settings → For fine-tuning.
+screen, and no browser says exactly how long. The page takes off 60 ms, a
+typical figure; the true one for your iPad may differ by a few hundredths of
+a second, the same for every runner. It can be changed under Settings → For
+fine-tuning.
 
 ## How much mobile data it uses
 
@@ -703,7 +711,11 @@ RunScore file** on the results page).
   front.
 - **The badge says "iPad's own clock".** The site cannot be reached. Results
   are timed by the iPad and marked; when the connection is back the page
-  offers to correct them.
+  fills in their exact times, provided it has stayed open meanwhile.
+- **"No picture from the camera."** The camera says it is on and sends
+  nothing: Safari has paused it, or another app has taken it. The page starts
+  the camera afresh by itself; if that does not help it says so, and a tap on
+  **Start the camera** tries again. Take times with **Mark** meanwhile.
 - **The badge says "No connection".** Results are safe on the iPad and are
   sent when the connection returns.
 - **The badge says "Not accepted".** The site refused the upload, most likely

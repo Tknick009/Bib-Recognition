@@ -53,10 +53,11 @@ function withDefaults(saved, defaults) {
 /**
  * A race as it is kept on the iPad. `station` is written on every result, so
  * that the iPads at an event can be told apart; `unsent` is true while the
- * results site may not have all of its results.
+ * results site may not have all of its results; `deleted` holds the
+ * identifiers of results deleted here until the site has heard of it.
  */
 export function newRace(name, code, station, createdAt) {
-  return { id: newID(), name, code, station, createdAt, startTime: null, crossings: [], roster: [], restrictToRoster: false, unsent: false };
+  return { id: newID(), name, code, station, createdAt, startTime: null, crossings: [], deleted: [], roster: [], restrictToRoster: false, unsent: false };
 }
 
 function cleanRace(saved) {
@@ -69,6 +70,8 @@ function cleanRace(saved) {
     createdAt: Number(saved.createdAt) || 0,
     startTime: typeof saved.startTime === 'number' ? saved.startTime : null,
     crossings: Array.isArray(saved.crossings) ? saved.crossings.filter((crossing) => crossing && typeof crossing.id === 'string' && typeof crossing.time === 'number') : [],
+    // Results deleted on this iPad that the results site may not have heard about yet.
+    deleted: Array.isArray(saved.deleted) ? saved.deleted.filter((id) => typeof id === 'string') : [],
     roster: Array.isArray(saved.roster) ? saved.roster.filter((entry) => entry && typeof entry.bib === 'string') : [],
     restrictToRoster: saved.restrictToRoster === true,
     // Whatever was the case when the page was closed, the results site is asked afresh.
@@ -135,7 +138,8 @@ export class Storage {
       }));
       this.#problem = null;
     } catch (error) {
-      this.#problem = `Results could not be saved on this iPad (${error.message}). They are still sent to the results site.`;
+      this.#problem = `Results can no longer be saved on this iPad (${error.message}). They are still sent to the results site, so keep this page open. ` +
+        'To make room, clear old races off the iPad (Race → Another race…).';
     }
   }
 
@@ -148,7 +152,20 @@ export class Storage {
     this.#database = new Promise((resolve, reject) => {
       const request = indexedDB.open('bibtimer-capture', 1);
       request.onupgradeneeded = () => request.result.createObjectStore('photos');
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const database = request.result;
+        // Safari has been known to drop the connection while a page is in
+        // the background. It is then opened again the next time.
+        const forget = () => {
+          this.#database = null;
+        };
+        database.onclose = forget;
+        database.onversionchange = () => {
+          database.close();
+          forget();
+        };
+        resolve(database);
+      };
       request.onerror = () => reject(request.error);
     });
     // A browser that keeps no database simply keeps no pictures.
@@ -167,6 +184,8 @@ export class Storage {
         transaction.onabort = () => reject(transaction.error);
       });
     } catch {
+      // Whatever went wrong, a fresh connection is tried next time.
+      this.#database = null;
       return null;
     }
   }

@@ -29,6 +29,9 @@ function describe(error) {
   }
 }
 
+// From a browser's report of a picture to the picture being on show, in milliseconds.
+const reportedToShown = 35;
+
 export class Camera {
   #video;
   #stream = null;
@@ -36,12 +39,19 @@ export class Camera {
   #starting = 0;
 
   /**
-   * How long before a picture is shown the camera took it, in milliseconds,
-   * for browsers that do not say.
+   * How long before a picture is shown the camera took it, in milliseconds.
+   * Where the browser reports when a picture reached it from the camera,
+   * that moment is used, less the part of this delay that lies before it.
    */
   delay = 60;
   /** Called when the camera stops by itself (the page was put away, another app took it). */
   onEnded = () => {};
+  /**
+   * Called with true when the camera stops sending pictures without ending
+   * (paused in the browser, taken by another app, the iPad too hot), and
+   * with false when it sends them again.
+   */
+  onMuted = () => {};
 
   /** @param {HTMLVideoElement} video where the camera's picture is shown */
   constructor(video) {
@@ -50,6 +60,11 @@ export class Camera {
 
   get running() {
     return this.#track !== null && this.#track.readyState === 'live';
+  }
+
+  /** True while the camera is on but sending no pictures. */
+  get muted() {
+    return this.#track !== null && this.#track.muted === true;
   }
 
   /** The picture's size in pixels; 0 until the first picture has arrived. */
@@ -109,6 +124,12 @@ export class Camera {
     this.#track = track;
     track.addEventListener('ended', () => {
       if (track === this.#track) this.onEnded();
+    });
+    track.addEventListener('mute', () => {
+      if (track === this.#track) this.onMuted(true);
+    });
+    track.addEventListener('unmute', () => {
+      if (track === this.#track) this.onMuted(false);
     });
 
     const video = this.#video;
@@ -192,10 +213,13 @@ export class Camera {
     const video = this.#video;
     if (typeof video.requestVideoFrameCallback === 'function') {
       const handle = video.requestVideoFrameCallback((now, metadata) => {
-        const taken = metadata?.captureTime;
-        // Some browsers say when the camera took the picture. Where they do
-        // not, it is taken to be a fixed time before it was shown.
-        if (typeof taken === 'number' && taken <= now + 5 && now - taken < 1000) use(taken);
+        const handed = metadata?.captureTime;
+        // Some browsers say when the picture reached them from the camera.
+        // That is not yet the moment the lens saw it, which lies a little
+        // earlier still: of the whole delay from lens to screen, about 35 ms
+        // are taken to lie after that report. Where there is no report, the
+        // whole delay is taken off the moment the picture was shown.
+        if (typeof handed === 'number' && handed <= now + 5 && now - handed < 1000) use(handed - Math.max(0, this.delay - reportedToShown));
         else use((metadata?.presentationTime ?? now) - this.delay);
       });
       return () => video.cancelVideoFrameCallback(handle);

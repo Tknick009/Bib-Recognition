@@ -133,6 +133,7 @@ export class TimeKeeper {
   #timer = null;
   #running = false;
   #syncing = null;
+  #stamp;
   #count = 0;
   #failures = 0;
   #again = false;
@@ -143,6 +144,8 @@ export class TimeKeeper {
   problem = '';
   /** When the hub was last asked successfully, on the local clock; null if never. */
   lastSync = null;
+  /** What `stamp` gave when the measurement now in use was made; null if none has been taken into use. */
+  fixStamp = null;
 
   /**
    * @param {object} options
@@ -151,9 +154,12 @@ export class TimeKeeper {
    * @param {() => number} options.localNow the local clock that only runs forward, in milliseconds
    * @param {(path: string, sent: number, received: number) => ({sent: number, received: number}|null)} [options.refine]
    *   a better idea of when a question left and its answer came, if the browser has one
+   * @param {() => number} [options.stamp] gives a number that changes by 100 or more when the local clock
+   *   has jumped (the difference between the device's two clocks, in milliseconds). A measurement made
+   *   before such a jump says nothing about the clock after it, and is not used.
    */
   constructor({
-    link, clock, localNow, refine = null, onChange = () => {},
+    link, clock, localNow, refine = null, stamp = () => 0, onChange = () => {},
     wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (run, ms) => setTimeout(run, ms), cancel = (timer) => clearTimeout(timer),
   }) {
@@ -161,6 +167,7 @@ export class TimeKeeper {
     this.#clock = clock;
     this.#localNow = localNow;
     this.#refine = refine;
+    this.#stamp = stamp;
     this.#onChange = onChange;
     this.#wait = wait;
     this.#schedule = schedule;
@@ -208,6 +215,7 @@ export class TimeKeeper {
       ...measure({ ...times, serverReceived: body.received, serverSent: body.sent }),
       hubError: Number.isFinite(body.error) ? body.error : null,
       hubChecked: body.checked === true,
+      stamp: this.#stamp(),
     };
   }
 
@@ -240,13 +248,17 @@ export class TimeKeeper {
         }
         if (asked + 1 < samples) await this.#wait(120);
       }
-      const best = bestOf(taken);
+      // Only what was measured with the clock as it is now.
+      const stampNow = this.#stamp();
+      const best = bestOf(taken.filter((sample) => Math.abs(sample.stamp - stampNow) < 100));
       if (!best) {
-        this.problem = failure?.message ?? 'The results site sent no usable time.';
+        this.problem = taken.length > 0
+          ? 'The clock of this device jumped while it was being set.'
+          : failure?.message ?? 'The results site sent no usable time.';
         return false;
       }
       if (replace) this.#clock.forget();
-      this.#clock.adopt(best, best.hubError ?? 0);
+      if (this.#clock.adopt(best, best.hubError ?? 0)) this.fixStamp = best.stamp;
       this.hubChecked = best.hubChecked;
       this.problem = '';
       this.lastSync = this.#localNow();
@@ -274,9 +286,14 @@ export const checkInEvery = 45_000;
 // connection that is already open (measured: see the README).
 const overheadBytes = 400;
 
+/** What a race is known by on this iPad. */
+const keyOf = (race) => race.id ?? race.code;
+
 /**
  * Sends the results of the races on this iPad to the hub: everything the
- * first time, after that only what has changed.
+ * first time, after that only what has changed. Nothing is ever taken off
+ * the hub except results that were deleted on this iPad (a race keeps their
+ * identifiers in `deleted` until the hub has heard).
  */
 export class Uploader {
   #link;
@@ -284,10 +301,14 @@ export class Uploader {
   #jobs;
   #onChange;
   #onSettled;
+  #onHeard;
   #now;
   #schedule;
   #cancel;
-  // What the hub is believed to hold, by event code.
+  // What the hub is believed to hold of each race, by the race's own
+  // identifier on this iPad. Not by its code on the hub: a race that was
+  // cleared off the iPad and set up again has the same code, and none of
+  // what was known about the first applies to the second.
   #known = new Map();
   #timer = null;
   #due = Infinity;
@@ -313,9 +334,11 @@ export class Uploader {
    * @param {() => {race: object, station: string, timeZone: string}[]} options.jobs the races to keep the hub
    *   up to date with: first the one in use, then any others with results the hub has not got yet
    * @param {(race: object) => void} [options.onSettled] called when the hub has everything of a race
+   * @param {(race: object) => void} [options.onHeard] called when the hub has heard of deletions, and
+   *   their identifiers have been taken out of the race's `deleted`
    */
   constructor({
-    link, deviceID, jobs, onChange = () => {}, onSettled = () => {}, now = () => Date.now(),
+    link, deviceID, jobs, onChange = () => {}, onSettled = () => {}, onHeard = () => {}, now = () => Date.now(),
     schedule = (run, ms) => setTimeout(run, ms), cancel = (timer) => clearTimeout(timer),
   }) {
     this.#link = link;
@@ -323,6 +346,7 @@ export class Uploader {
     this.#jobs = jobs;
     this.#onChange = onChange;
     this.#onSettled = onSettled;
+    this.#onHeard = onHeard;
     this.#now = now;
     this.#schedule = schedule;
     this.#cancel = cancel;
@@ -367,10 +391,19 @@ export class Uploader {
 
   /** How many results of a race the hub does not have in their present form. */
   waiting(race, station, timeZone) {
-    const known = this.#known.get(race.code) ?? null;
+    const known = this.#known.get(keyOf(race)) ?? null;
     if (!known) return race.crossings.length;
     const push = planPush(race, station, timeZone, known);
     return push.crossings.length + push.deleted.length;
+  }
+
+  /**
+   * How many results the hub holds from this iPad for a race that the iPad
+   * itself does not have (any more); 0 if that is not known. They are left
+   * where they are.
+   */
+  extra(race) {
+    return this.#known.get(keyOf(race))?.extra ?? 0;
   }
 
   #plan(delay, onlySooner = false) {
@@ -390,7 +423,7 @@ export class Uploader {
   #work() {
     const jobs = this.#jobs();
     for (const [index, job] of jobs.entries()) {
-      const known = this.#known.get(job.race.code) ?? null;
+      const known = this.#known.get(keyOf(job.race)) ?? null;
       const push = planPush(job.race, job.station, job.timeZone, known);
       if (hasChanges(push, known)) return { job, push, known };
       // Only the race in use checks in when it has nothing new.
@@ -419,15 +452,21 @@ export class Uploader {
       });
       this.bytes += body.length + overheadBytes;
       this.#lastContact = this.#now();
+      // The hub has heard of these deletions; the race need not remember them.
+      if (push.deleted.length > 0 && Array.isArray(job.race.deleted) && job.race.deleted.length > 0) {
+        const heard = new Set(push.deleted);
+        job.race.deleted = job.race.deleted.filter((id) => !heard.has(id));
+        this.#onHeard(job.race);
+      }
       const after = stateAfter(push, reply, known);
       if (after) {
-        this.#known.set(code, after);
+        this.#known.set(keyOf(job.race), after);
       } else {
-        this.#known.delete(code);
-        if (push.full) {
-          // The hub was sent everything and still counts differently.
-          // Sending it all again at once would only use up data.
-          throw new Failure(`The results site holds ${reply.count} results from this iPad where there should be ${push.crossings.length}.`, 409);
+        this.#known.delete(keyOf(job.race));
+        if (!known) {
+          // The hub was sent everything and holds less than that: it has
+          // refused some. Sending it all again at once would only use up data.
+          throw new Failure(`The results site kept only ${reply.count} of the ${push.crossings.length} results it was sent.`, 409);
         }
       }
       this.failures = 0;
@@ -458,13 +497,13 @@ export class Uploader {
     if (!this.#running || this.#sending || !this.#link.key) return;
     const [job] = this.#jobs();
     if (!job) return;
-    const known = this.#known.get(job.race.code) ?? null;
+    const known = this.#known.get(keyOf(job.race)) ?? null;
     const push = planPush(job.race, job.station, job.timeZone, known);
     if (!hasChanges(push, known)) return;
     const body = JSON.stringify(push);
     if (body.length > 60_000) return;
     // What the hub holds after this is not known until it is next asked.
-    this.#known.delete(job.race.code);
+    this.#known.delete(keyOf(job.race));
     this.#link.json(`/api/events/${encodeURIComponent(job.race.code)}/sources/${encodeURIComponent(this.#deviceID)}`, {
       method: 'PUT', body, headers: { 'Content-Type': 'application/json' }, keepalive: true,
     }).catch(() => {});

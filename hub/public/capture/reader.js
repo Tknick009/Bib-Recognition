@@ -23,6 +23,7 @@ export class Reader {
   #nextID = 1;
   #wanted = plainReader;
   #restarts = [];
+  #failedScans = 0;
 
   /** 'idle' | 'loading' | 'ready' | 'failed' */
   state = 'idle';
@@ -55,6 +56,7 @@ export class Reader {
   #begin(wanted, fellBack) {
     this.stop();
     this.#wanted = wanted;
+    this.#failedScans = 0;
     this.program = wanted.program;
     this.fellBack = fellBack;
     this.state = 'loading';
@@ -154,6 +156,7 @@ export class Reader {
       if (!pending || pending.id !== message.id) return;
       this.#pending = null;
       clearTimeout(pending.timer);
+      this.#failedScans = 0;
       pending.resolve(message);
     } else if (message.type === 'error') {
       if (message.during === 'start') {
@@ -165,6 +168,14 @@ export class Reader {
       this.#pending = null;
       clearTimeout(pending.timer);
       pending.reject(new Error(message.message));
+      // One picture that cannot be read is nothing; several in a row mean
+      // the reader has stopped working (out of memory, say) though it still
+      // answers. It is then started afresh, like one that has gone silent.
+      this.#failedScans += 1;
+      if (this.#failedScans >= 3) {
+        this.#failedScans = 0;
+        this.#gaveUp(`it could not read the pictures (${message.message})`);
+      }
     }
   }
 

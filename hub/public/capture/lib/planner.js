@@ -1,6 +1,11 @@
-// Works out what to send to the hub: everything, when it is not known what
-// the hub holds, and otherwise only what has changed since the last upload
-// the hub accepted. The capture page stays the master copy of its results.
+// Works out what to send to the hub: everything this iPad has, when it is
+// not known what the hub holds, and otherwise only what has changed since the
+// last upload the hub accepted.
+//
+// An upload never takes anything away from the hub except results this iPad
+// itself has deleted. If the hub holds results from this iPad that the iPad
+// no longer has (because it could not save them before its page was loaded
+// again, or because the race was cleared off the iPad), they stay there.
 
 import { localDate } from './format.js';
 
@@ -36,27 +41,29 @@ function sameWire(a, b) {
 /**
  * The upload that brings the hub up to date with a race.
  *
- * @param {object} race { name, startTime (seconds or null), crossings }
+ * @param {object} race { name, startTime (seconds or null), crossings, deleted }; `deleted` lists the
+ *   identifiers of results deleted on this iPad that the hub may not have heard about yet
  * @param {string} station this iPad's station name
  * @param {string} timeZone e.g. "America/New_York"
  * @param {object|null} known what the hub is believed to hold (see `stateAfter`); null if that is not known
  */
 export function planPush(race, station, timeZone, known) {
   const current = race.crossings.map(wireCrossing);
-  const push = { station, raceName: race.name, timeZone, full: true, crossings: current, deleted: [] };
+  const ids = new Set(current.map((crossing) => crossing.id));
+  const deleted = (race.deleted ?? []).filter((id) => !ids.has(id));
+  // Never "full": that word tells the hub to drop whatever is not in the upload.
+  const push = { station, raceName: race.name, timeZone, full: false, crossings: current, deleted: [...new Set(deleted)].sort() };
   if (race.startTime != null) push.startTime = race.startTime;
   if (!known) return push;
 
-  const ids = new Set(current.map((crossing) => crossing.id));
-  push.full = false;
   push.crossings = current.filter((crossing) => !sameWire(known.crossings.get(crossing.id), crossing));
-  push.deleted = [...known.crossings.keys()].filter((id) => !ids.has(id)).sort();
+  push.deleted = [...new Set([...deleted, ...[...known.crossings.keys()].filter((id) => !ids.has(id))])].sort();
   return push;
 }
 
 /** True if the upload changes nothing on the hub except "last heard from". */
 export function isCheckIn(push) {
-  return !push.full && push.crossings.length === 0 && push.deleted.length === 0;
+  return push.crossings.length === 0 && push.deleted.length === 0;
 }
 
 /** Whether an upload would change anything the hub shows. */
@@ -70,19 +77,25 @@ export function hasChanges(push, known) {
  * What the hub holds once it has accepted `push`; null if its answer shows
  * that it holds something else, in which case everything is to be sent again.
  *
+ * `extra` in the result counts results the hub holds from this iPad that the
+ * iPad itself does not have. They are left alone.
+ *
  * @param {object} reply the hub's answer: { store, count }
  */
 export function stateAfter(push, reply, known) {
-  let crossings = new Map();
-  if (!push.full) {
-    // An upload of changes only makes sense on top of what it was worked out against.
-    if (!known || known.store !== reply.store) return null;
-    crossings = new Map(known.crossings);
-  }
+  // An upload of changes only makes sense on top of what it was worked out against.
+  if (known && known.store !== reply.store) return null;
+  const crossings = new Map(known ? known.crossings : []);
   for (const crossing of push.crossings) crossings.set(crossing.id, crossing);
   for (const id of push.deleted) crossings.delete(id);
-  if (reply.count !== crossings.size) return null;
-  return { store: reply.store, crossings, station: push.station, raceName: push.raceName, timeZone: push.timeZone, startTime: push.startTime ?? null };
+  // After everything has been sent, whatever the hub counts beyond that is
+  // what it had already and the iPad has not. Fewer means it refused some.
+  const extra = known ? known.extra : reply.count - crossings.size;
+  if (extra < 0 || reply.count !== crossings.size + extra) return null;
+  return {
+    store: reply.store, crossings, extra,
+    station: push.station, raceName: push.raceName, timeZone: push.timeZone, startTime: push.startTime ?? null,
+  };
 }
 
 // ---- Event codes ----
