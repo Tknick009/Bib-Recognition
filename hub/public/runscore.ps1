@@ -85,6 +85,8 @@ function Say([string] $text, [string] $color = '') {
 # selected Windows holds up the program that owns the window, until Enter is
 # pressed. A stray click must not stop results on their way to RunScore, so
 # that way of selecting is switched off for this window.
+$window = @{ Console = $null; Input = $null; Before = $null }
+
 function Disable-ClickToSelect {
     if ($env:OS -ne 'Windows_NT') { return }
     try {
@@ -97,7 +99,21 @@ function Disable-ClickToSelect {
         if ($console::GetConsoleMode($keyboardAndMouse, [ref] $mode)) {
             # Without "quick edit" (0x40); 0x80 says that this choice is meant.
             $wanted = [uint32] ((([long] $mode) -band (-bnot ([long] 0x40))) -bor 0x80)
-            $null = $console::SetConsoleMode($keyboardAndMouse, $wanted)
+            if ($console::SetConsoleMode($keyboardAndMouse, $wanted)) {
+                $window.Console = $console
+                $window.Input = $keyboardAndMouse
+                $window.Before = $mode
+            }
+        }
+    } catch { }
+}
+
+# Puts the window back the way it was, for whatever it is used for next.
+function Restore-ClickToSelect {
+    try {
+        if ($null -ne $window.Before) {
+            $null = $window.Console::SetConsoleMode($window.Input, [uint32] $window.Before)
+            $window.Before = $null
         }
     } catch { }
 }
@@ -247,9 +263,25 @@ if ($ResendAll) {
     }
 }
 
+# The two files below are bookkeeping. Trouble with them (a full disk, a
+# virus scanner holding a file) is reported, but must never stop results from
+# being passed on: while this window stays open, what it has passed on is
+# also remembered here in memory.
 function Save-Place {
-    $text = @{ feed = $place.Feed; after = $place.After } | ConvertTo-Json -Compress
-    [System.IO.File]::WriteAllText($placeFile, $text)
+    try {
+        $text = @{ feed = $place.Feed; after = $place.After } | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText($placeFile, $text)
+    } catch {
+        Say ('Could not note where it has got to ({0}). It carries on.' -f $_.Exception.Message) 'Yellow'
+    }
+}
+
+function Add-ToRecord($lines) {
+    try {
+        [System.IO.File]::AppendAllText($sentFile, (($lines -join "`r`n") + "`r`n"))
+    } catch {
+        Say ('Could not add to the record of what was passed on ({0}). It carries on.' -f $_.Exception.Message) 'Yellow'
+    }
 }
 
 # ---- Talking to the hub ----
@@ -314,6 +346,7 @@ $told = New-Object 'System.Collections.Generic.HashSet[string]'
 
 try {
     while ($true) {
+      try {
         # RunScore first: without it there is nowhere to put a result.
         if (-not (Test-RunScore)) {
             if ($link.Client) {
@@ -406,11 +439,9 @@ try {
         }
 
         if ($written.Count -gt 0) {
-            [System.IO.File]::AppendAllText($sentFile, (($written -join "`r`n") + "`r`n"))
-            foreach ($line in $written) {
-                $null = $sent.Add($line)
-                Say ('-> {0}' -f $line)
-            }
+            foreach ($line in $written) { $null = $sent.Add($line) }
+            Add-ToRecord $written
+            foreach ($line in $written) { Say ('-> {0}' -f $line) }
         }
         if (([string] $reply.feed) -ne $place.Feed -or ([long] $reply.next) -ne $place.After) {
             $place.Feed = [string] $reply.feed
@@ -423,7 +454,14 @@ try {
         if ($entries.Count -eq 0 -and ((Get-Date) - $asked).TotalMilliseconds -lt 1000) {
             Start-Sleep -Milliseconds 2000
         }
+      } catch {
+        # Whatever went wrong in this round, the next one starts afresh.
+        Say ('Something unexpected happened ({0}). It carries on.' -f $_.Exception.Message) 'Red'
+        Close-RunScore
+        Start-Sleep -Seconds 2
+      }
     }
 } finally {
     Close-RunScore
+    Restore-ClickToSelect
 }

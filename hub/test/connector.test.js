@@ -42,6 +42,7 @@ for (const shell of (process.env.BIBTIMER_POWERSHELL ?? 'pwsh,powershell').split
   if (version) {
     runners.push({
       name: `${shell} ${version}`,
+      shell,
       // The program started from its file, as when it has been downloaded.
       fromFile: (args) => [shell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, ...args]],
       // The program fetched from the hub and run without ever being a file:
@@ -355,6 +356,33 @@ for (const runner of runners) {
       assert.equal(runScore.lines.length, 0);
       await connector.stop();
       await runScore.stop();
+    });
+
+    // Started by these tests, the program has no console: no keyboard to read
+    // from and no window. On the scoring computer it has both, and it changes
+    // a setting of that window. So it is also run once in a window of its own.
+    const ownWindow = process.platform === 'win32' && runner.shell ? false : 'needs Windows and PowerShell';
+    test('it works in a console window of its own, as on the scoring computer', { ...patient, skip: ownWindow }, async () => {
+      const code = 'own-window';
+      const runScore = await runScoreListening();
+      await upload(code, deviceA, [crossing('a1', '7', 1432.5), crossing('a2', '12', 1500.25)]);
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, ...settings(code, runScore)];
+      const listed = args.map((value) => `'${value.replaceAll("'", "''")}'`).join(',');
+      const started = spawnSync(runner.shell, ['-NoProfile', '-NonInteractive', '-Command',
+        `(Start-Process -FilePath '${runner.shell}' -ArgumentList ${listed} -WindowStyle Hidden -PassThru).Id`], {
+        encoding: 'utf8', timeout: 120_000, windowsHide: true,
+      });
+      const pid = Number(started.stdout.trim());
+      assert.ok(Number.isInteger(pid) && pid > 0, `no window was opened: ${started.stdout} ${started.stderr}`);
+      try {
+        await until(() => runScore.lines.length >= 2, () => `RunScore has ${JSON.stringify(runScore.lines)}`);
+        assert.deepEqual(runScore.lines, ['RSBI,7,00:23:52.50,Finish', 'RSBI,12,00:25:00.25,Finish']);
+        // And it keeps going there.
+        await upload(code, deviceA, [crossing('a3', '305', 1501.75)]);
+        await until(() => runScore.lines.length >= 3, () => `RunScore has ${JSON.stringify(runScore.lines)}`);
+      } finally {
+        try { process.kill(pid); } catch { /* it has ended by itself */ }
+      }
     });
 
     test('it can be started straight from the hub, without being saved as a file first', { ...patient, skip: runner.fromHub ? false : 'not for the stand-in' }, async () => {
