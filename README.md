@@ -385,8 +385,10 @@ How it behaves:
   connector switches that off for its window. Should the window ever seem
   stuck all the same, click in it and press Enter; nothing is lost meanwhile.
 - **Data.** The connector asks the hub to hold each request until there is a
-  result, so it adds only about 0.2 MB an hour when nothing is happening
-  (worked out from the size of a request, not measured).
+  result, so it uses little: about 0.14 MB an hour when nothing is happening
+  and under 1 KB per result, which comes to about 0.3 MB for a two-hour race
+  with 150 results and 0.8 MB with 1,000 (measured the same way as the
+  figures for the iPads below).
 
 Things that can be added to the end of the line:
 
