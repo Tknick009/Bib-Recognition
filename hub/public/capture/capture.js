@@ -701,6 +701,8 @@ function look(time) {
     framelessChecks = 0;
     $('camera-off').hidden = true;
   }
+  // Whatever was said about the camera being paused no longer holds.
+  if (notices.has('camera')) clearNotice('camera');
   const width = camera.width;
   const height = camera.height;
   if (!width || !height || reader.state !== 'ready' || view !== 'stage') {
