@@ -190,12 +190,12 @@ let clocksApart = deviceOffset();
 
 function checkClock() {
   const apart = deviceOffset();
-  const jump = Math.abs(apart - clocksApart);
-  if (jump < 200) return;
+  if (Math.abs(apart - clocksApart) < 200) return;
   clocksApart = apart;
-  // A long stop makes every time wrong by as much: better the iPad's own
-  // clock until the results site has been asked again.
-  if (jump > 2000) clock.forget();
+  // Every time would now be wrong by as much as the clock jumped: better
+  // the iPad's own clock, and marked as such, until the results site has
+  // been asked again, which takes a second.
+  clock.forget();
   keeper.sync({ replace: true });
 }
 

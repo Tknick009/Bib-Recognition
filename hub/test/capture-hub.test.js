@@ -171,6 +171,20 @@ test('a fix that can no longer be trusted is replaced, a good one is kept', asyn
   assert.ok(clock.fix.error >= 200, 'and how rough it is, is known');
 });
 
+test('a clock that jumps while it is being set is set once more afterwards', async () => {
+  const local = () => performance.now();
+  const clock = new RaceClock(local);
+  const { link, state } = linkTo();
+  const keeper = new TimeKeeper({ link, clock, localNow: local });
+  const first = keeper.sync({ samples: 2 });
+  // The iPad's clock is found to have jumped while the first measurement is under way.
+  const second = keeper.sync({ samples: 2, replace: true });
+  assert.equal(await first, true);
+  assert.equal(await second, true);
+  await until(() => !keeper.syncing && state.requests === 4, 'the second measurement');
+  assert.ok(Math.abs(clock.at(local(), 0).time * 1000 - Date.now()) < 60);
+});
+
 // ---- Uploads ----
 
 test('everything is sent the first time, and after that only what has changed', async () => {

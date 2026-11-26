@@ -135,6 +135,7 @@ export class TimeKeeper {
   #syncing = null;
   #count = 0;
   #failures = 0;
+  #again = false;
 
   /** Whether the hub's own clock has been checked against time servers; null until the hub has been asked. */
   hubChecked = null;
@@ -220,7 +221,12 @@ export class TimeKeeper {
    * @returns {Promise<boolean>} whether the hub answered
    */
   sync({ samples = 6, replace = false } = {}) {
-    if (this.#syncing) return this.#syncing;
+    if (this.#syncing) {
+      // What is being measured at this moment may straddle the jump of the
+      // clock that this call is about: measure once more when it is done.
+      if (replace) this.#again = true;
+      return this.#syncing;
+    }
     this.#syncing = (async () => {
       const taken = [];
       let failure = null;
@@ -250,6 +256,10 @@ export class TimeKeeper {
     return this.#syncing.finally(() => {
       this.#syncing = null;
       this.#onChange();
+      if (this.#again) {
+        this.#again = false;
+        this.sync({ samples, replace: true });
+      }
     });
   }
 }
