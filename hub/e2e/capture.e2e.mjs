@@ -41,8 +41,27 @@ const scene = fs.readFileSync(path.join(here, 'scene.js'), 'utf8');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bibtimer-e2e-'));
 const hubLog = [];
-const hub = await startHub({ port: 0, host: '127.0.0.1', key, viewKey, dataDir, log: (line) => hubLog.push(line) });
-const base = `http://127.0.0.1:${hub.port}`;
+let hub = await startHub({ port: 0, host: '127.0.0.1', key, viewKey, dataDir, log: (line) => hubLog.push(line) });
+const port = hub.port;
+const base = `http://127.0.0.1:${port}`;
+
+// The connection is taken away by stopping the hub, and brought back by
+// starting it again at the same address with what it had saved. (A browser's
+// own pretend "offline" is not used: in WebKit it also stops the page's copy
+// on the device from being opened, which a missing connection does not.)
+let hubIsUp = true;
+
+async function cutConnection() {
+  await hub.close();
+  hubIsUp = false;
+}
+
+async function restoreConnection(page) {
+  hub = await startHub({ port, host: '127.0.0.1', key, viewKey, dataDir, log: (line) => hubLog.push(line) });
+  hubIsUp = true;
+  // What a device says when its connection is back.
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+}
 
 const launchOptions = browserName === 'chromium' ? { args: ['--autoplay-policy=no-user-gesture-required'] } : {};
 const browser = await playwright[browserName].launch(launchOptions);
@@ -416,7 +435,7 @@ test('reload while recording', async () => {
 });
 
 test('without a connection', async () => {
-  const { page, context, code } = shared;
+  const { page, code } = shared;
   // The copy on the device is in charge, and holds what the reader needs.
   const kept = await page.evaluate(async () => {
     const names = await caches.keys();
@@ -430,7 +449,7 @@ test('without a connection', async () => {
     assert.ok(kept.files.includes(file), `${file} is kept on the device`);
   }
 
-  await context.setOffline(true);
+  await cutConnection();
   const countBefore = (await state(page)).results.length;
   await run(page, [512, 513], { gap: 500 });
   let now = await state(page);
@@ -454,8 +473,7 @@ test('without a connection', async () => {
   const unsynced = now.results.find((result) => result.bib === '514');
   assert.ok(unsynced && unsynced.clock === 'device', 'without the hub, times come from the device and say so');
 
-  await context.setOffline(false);
-  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await restoreConnection(page);
   await until(async () => (await hubRows(code))?.length === countBefore + 3, 'everything to be sent once the connection is back', 60_000);
   await until(async () => (await state(page)).clock.synced, 'the clock to be set again');
 
@@ -621,7 +639,7 @@ try {
   }
   if (failed > 0 && hubLog.length > 0) console.log(`--- hub ---\n${hubLog.join('\n')}`);
   await browser.close().catch(() => {});
-  await hub.close();
+  if (hubIsUp) await hub.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 }
 console.log(failed === 0 ? `\nAll passed in ${browserName}${asIPad ? ' as an iPad' : ''}.` : `\nFailed in ${browserName}${asIPad ? ' as an iPad' : ''}.`);

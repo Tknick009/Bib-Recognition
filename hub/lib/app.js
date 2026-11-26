@@ -65,8 +65,9 @@ const typesByExtension = {
 // The results page loads nothing from anywhere else and runs no inline script.
 const pagePolicy = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 // The capture page also runs the number-reading program (WebAssembly, in
-// workers), shows the camera, and keeps pictures of bibs.
-const capturePolicy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; " +
+// workers, some of them started from a copy the page holds: "blob:"), shows
+// the camera, and keeps pictures of bibs.
+const capturePolicy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; " +
   "img-src 'self' blob: data:; media-src 'self' blob: mediastream:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 // With these the browser lets the number-reading program use several
 // processor cores at once, which makes it several times faster.

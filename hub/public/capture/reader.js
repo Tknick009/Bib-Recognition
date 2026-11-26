@@ -12,7 +12,7 @@ export const plainReader = Object.freeze({ program: 'plain', threads: 1 });
 
 // How long the reader may stay silent before it is taken to be stuck.
 const silenceWhileLoading = 60_000;
-const silenceWhilePreparing = 45_000;
+const silenceWhilePreparing = 30_000;
 const longestScan = 20_000;
 
 export class Reader {

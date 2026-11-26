@@ -487,10 +487,34 @@ const reader = new Reader({
       trial.current.program = reader.program;
       trial.note(null);
     }
+    if (reader.state === 'ready' && reader.program === 'quick') keepPlainReaderToo();
     drawReader();
     nextLook();
   },
 });
+
+// A device that reads with the quick form goes back to the plain form if the
+// quick one stops working. So that this also works without a connection, the
+// plain form is fetched once in the background (about 2 MB) and kept.
+let plainAskedFor = false;
+
+function keepPlainReaderToo() {
+  if (plainAskedFor || !navigator.serviceWorker?.controller) return;
+  plainAskedFor = true;
+  setTimeout(async () => {
+    for (const file of ['/vendor/plain/ort.wasm.min.js', '/vendor/plain/ort-wasm-simd.wasm']) {
+      try {
+        if (await caches.match(file, { ignoreVary: true })) continue;
+        // Asked for through the copy-keeper, which keeps what passes through it.
+        await (await fetch(file)).arrayBuffer();
+      } catch {
+        // Another time.
+        plainAskedFor = false;
+        return;
+      }
+    }
+  }, 8000);
+}
 
 const overlay = new Overlay($('overlay'), video, {
   settings: () => storage.settings,

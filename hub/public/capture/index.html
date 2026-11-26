@@ -75,16 +75,18 @@
 
     <section id="stage" class="stage" hidden>
       <div id="view" class="view">
-        <video id="video" playsinline muted autoplay></video>
-        <canvas id="overlay"></canvas>
-        <div class="view-top">
-          <span id="reader-chip" class="badge"></span>
-          <span id="rec-chip" class="badge rec" hidden>Recording</span>
-        </div>
-        <div id="notices" class="notices"></div>
-        <div id="camera-off" class="camera-off" hidden>
-          <p id="camera-problem"></p>
-          <button id="camera-start" type="button">Start the camera</button>
+        <div class="picture">
+          <video id="video" playsinline muted autoplay></video>
+          <canvas id="overlay"></canvas>
+          <div class="view-top">
+            <span id="reader-chip" class="badge"></span>
+            <span id="rec-chip" class="badge rec" hidden>Recording</span>
+          </div>
+          <div id="notices" class="notices"></div>
+          <div id="camera-off" class="camera-off" hidden>
+            <p id="camera-problem"></p>
+            <button id="camera-start" type="button">Start the camera</button>
+          </div>
         </div>
         <div class="view-tools">
           <div id="main-tools" class="tools">
@@ -94,7 +96,7 @@
           </div>
           <div id="adjust-tools" class="tools" hidden>
             <span class="hint">Drag the round ends to lay the line where runners finish; the arrow shows the way they run.
-              Drag the square corners to mark where bibs can be: a smaller area is searched faster.</span>
+              Drag the square corners round the part where bibs can be: a smaller part is searched faster.</span>
             <button id="flip-line" class="quiet" type="button">Turn the arrow round</button>
             <button id="reset-line" class="quiet" type="button">Reset</button>
             <button id="adjust-done" type="button">Done</button>

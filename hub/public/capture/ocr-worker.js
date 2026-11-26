@@ -9,9 +9,37 @@
 import { createEngine } from './engine.js';
 
 const programs = {
-  quick: { module: '/vendor/ort.wasm.min.mjs', folder: '/vendor/', binary: '/vendor/ort-wasm-simd-threaded.wasm', size: 14.8e6 },
-  plain: { module: '/vendor/plain/ort.wasm.min.js', folder: '/vendor/plain/', binary: '/vendor/plain/ort-wasm-simd.wasm', size: 10.6e6 },
+  quick: {
+    module: '/vendor/ort.wasm.min.mjs', folder: '/vendor/', binary: '/vendor/ort-wasm-simd-threaded.wasm', size: 14.8e6,
+    // The part of the program that each of its helpers on other cores starts from.
+    helper: '/vendor/ort-wasm-simd-threaded.mjs',
+  },
+  plain: { module: '/vendor/plain/ort.wasm.min.js', folder: '/vendor/plain/', binary: '/vendor/plain/ort-wasm-simd.wasm', size: 10.6e6, helper: null },
 };
+
+/** An address under which this text can be loaded as a program without asking the network. */
+function asProgram(bytes) {
+  return URL.createObjectURL(new Blob([bytes], { type: 'text/javascript' }));
+}
+
+/**
+ * Loads a part of the program. If it cannot be had the usual way (there is
+ * no connection, and the browser does not answer this from the copy kept on
+ * the iPad), it is taken out of that copy by hand.
+ */
+async function load(url) {
+  try {
+    return await import(url);
+  } catch (error) {
+    let kept;
+    try {
+      kept = await fetchWithProgress(url, () => {});
+    } catch {
+      throw error;
+    }
+    return import(asProgram(kept));
+  }
+}
 
 let engine = null;
 
@@ -67,8 +95,9 @@ async function start({ program, threads }) {
       self.postMessage({ type: 'loading', share });
     }
   };
-  const [ort, binary, detection, recognition, characters] = await Promise.all([
-    import(chosen.module),
+  const [ort, helper, binary, detection, recognition, characters] = await Promise.all([
+    load(chosen.module),
+    chosen.helper ? fetchWithProgress(chosen.helper, () => {}) : null,
     fetchWithProgress(chosen.binary, progress),
     fetchWithProgress('/vendor/detection.onnx', progress),
     fetchWithProgress('/vendor/recognition.onnx', progress),
@@ -77,7 +106,10 @@ async function start({ program, threads }) {
   const dictionary = new TextDecoder().decode(characters).split(/\r?\n/).filter((line) => line !== '');
   self.postMessage({ type: 'loading', share: 0.99, preparing: true });
 
-  ort.env.wasm.wasmPaths = chosen.folder;
+  // The helpers on other cores are started from a copy held here, not from
+  // the network: a browser fetches a helper's program afresh each time, past
+  // the copy kept on the iPad, and without a connection that fails.
+  ort.env.wasm.wasmPaths = helper ? { mjs: asProgram(helper) } : chosen.folder;
   ort.env.wasm.wasmBinary = binary.buffer;
   ort.env.wasm.proxy = false;
   ort.env.wasm.numThreads = chosen === programs.quick ? threads : 1;

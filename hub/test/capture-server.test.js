@@ -70,7 +70,7 @@ test('the capture page is served to anyone, with what the camera and the reader 
   assert.equal(page.headers['cross-origin-embedder-policy'], 'require-corp');
   // The reader is a WebAssembly program run in workers; nothing comes from anywhere else.
   assert.match(page.headers['content-security-policy'], /default-src 'self'/);
-  assert.match(page.headers['content-security-policy'], /script-src 'self' 'wasm-unsafe-eval'/);
+  assert.match(page.headers['content-security-policy'], /script-src 'self' 'wasm-unsafe-eval' blob:;/);
   assert.match(page.headers['content-security-policy'], /worker-src 'self' blob:/);
   assert.equal(page.headers['permissions-policy'], 'camera=(self)');
   assert.equal(page.headers['cache-control'], 'no-cache');
