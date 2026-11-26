@@ -81,6 +81,27 @@ function Say([string] $text, [string] $color = '') {
     }
 }
 
+# In the classic console window a click selects text, and while text is
+# selected Windows holds up the program that owns the window, until Enter is
+# pressed. A stray click must not stop results on their way to RunScore, so
+# that way of selecting is switched off for this window.
+function Disable-ClickToSelect {
+    if ($env:OS -ne 'Windows_NT') { return }
+    try {
+        $functions = '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int which);' +
+            '[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr handle, out uint mode);' +
+            '[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr handle, uint mode);'
+        $console = Add-Type -MemberDefinition $functions -Name 'ConsoleWindow' -Namespace 'BibTimer' -PassThru
+        $keyboardAndMouse = $console::GetStdHandle(-10)
+        [uint32] $mode = 0
+        if ($console::GetConsoleMode($keyboardAndMouse, [ref] $mode)) {
+            # Without "quick edit" (0x40); 0x80 says that this choice is meant.
+            $wanted = [uint32] ((([long] $mode) -band (-bnot ([long] 0x40))) -bor 0x80)
+            $null = $console::SetConsoleMode($keyboardAndMouse, $wanted)
+        }
+    } catch { }
+}
+
 # ---- The connection to RunScore ----
 
 # Kept in one object, so that the functions below change the same thing
@@ -270,9 +291,11 @@ function Explain-Failure($problem) {
 
 # ---- Start ----
 
+Disable-ClickToSelect
 Say 'Bib Timer -> RunScore'
 Say ('Results of "{0}" from {1} go to RunScore at {2}.' -f $EventCode, $Hub, $runScoreAt)
 Say ('Passed on before: {0}. The record is kept in {1}' -f $sent.Count, $sentFile)
+Say 'Leave this window open. If it ever seems stuck, click in it and press Enter.'
 
 try {
     $ping = Invoke-RestMethod -Uri ($Hub + '/api/ping') -Headers $headers -TimeoutSec 20 -UseBasicParsing
@@ -285,7 +308,8 @@ try {
 $waitingForRunScore = $false
 $trouble = ''
 $failures = 0
-# Notes shown already, so that one is not repeated when a batch is sent again.
+# Notes shown already, so that one is not repeated: when a batch is sent
+# again, or when the same thing holds for result after result.
 $told = New-Object 'System.Collections.Generic.HashSet[string]'
 
 try {
@@ -352,7 +376,7 @@ try {
         $written = New-Object 'System.Collections.Generic.List[string]'
         $delivered = $true
         foreach ($entry in $entries) {
-            if ($entry.note -and $told.Add(('{0}:{1}' -f $reply.feed, $entry.seq))) {
+            if ($entry.note -and $told.Add([string] $entry.note)) {
                 Say ('NOTE  {0}' -f $entry.note) 'Yellow'
             }
             if (-not $entry.line) { continue }

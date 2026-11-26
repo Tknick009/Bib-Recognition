@@ -313,6 +313,8 @@ export class Store {
         delete crossing.fed;
       } else {
         const entry = { kind: 'read', device: source.device, id: crossing.id, bib: crossing.bib, time: crossing.time };
+        // Timed with the iPad's own clock, which nothing has checked.
+        if (crossing.clock === 'device') entry.unsynced = true;
         if (crossing.fed) entry.was = crossing.fed;
         this.#addToFeed(event, entry);
         crossing.fed = { bib: crossing.bib, time: crossing.time };
@@ -619,6 +621,7 @@ export class Store {
     const now = cleanFed(raw);
     if (raw.kind !== 'read' || !now || now.bib === '') return null;
     const entry = { kind: 'read', device: raw.device, id: raw.id, bib: now.bib, time: now.time };
+    if (raw.unsynced === true) entry.unsynced = true;
     if (was) entry.was = was;
     return entry;
   }

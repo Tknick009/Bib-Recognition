@@ -536,6 +536,24 @@ test('the feed survives a restart of the hub', () => {
   assert.deepEqual(second.store.feed('race').entries.map((entry) => entry.seq), [1, 2, 3, 4]);
 });
 
+test('the feed marks results that were timed without a time sync', () => {
+  const dataDir = temporaryDirectory();
+  const { store, wait, read } = feedSetup({ dataDir });
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '87', 100, { clock: 'device', clockError: null }), crossing('b', '5', 101)]));
+  wait(8);
+  assert.deepEqual(read(0).entries.map((entry) => [entry.bib, entry.unsynced ?? false]), [['87', true], ['5', false]]);
+
+  // Once the iPad has synced and its times have been put right, the corrected time goes out unmarked.
+  store.applyPush('race', deviceA, push('Finish', [crossing('a', '87', 102.25)], { full: false }));
+  wait(8);
+  assert.deepEqual(read(2).entries, [
+    { seq: 3, kind: 'read', device: deviceA, id: 'a', bib: '87', time: 102.25, was: { bib: '87', time: 100 }, station: 'Finish' },
+  ]);
+  store.flush();
+  const reopened = new Store({ dataDir });
+  assert.deepEqual(reopened.feed('race').entries.map((entry) => entry.unsynced ?? false), [true, false, false]);
+});
+
 test('a very long feed drops its oldest entries and keeps counting', () => {
   const { store, wait, read } = feedSetup();
   const original = limits.feedEntries;

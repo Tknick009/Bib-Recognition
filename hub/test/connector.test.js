@@ -292,6 +292,15 @@ for (const runner of runners) {
       assert.equal(runScore.lines[3], 'RSBI,21,00:25:00.25,Finish');
       assert.match(connector.output(), /NOTE {2}Corrected on the iPad \(Finish\): bib 12 at 00:25:00\.25 should be bib 21\./);
       assert.match(connector.output(), /NOTE {2}Removed on the iPad \(Finish\) after it was passed on: bib 305 at 00:25:01\.75\./);
+
+      // An iPad that is timing with its own clock: its results are passed on, and the operator is warned, once.
+      const unsynced = { clock: 'device', clockError: null };
+      await upload(code, deviceB, [crossing('b1', '50', 1600, unsynced), crossing('b2', '51', 1601, unsynced)], { station: 'Backup' });
+      await until(() => runScore.lines.length >= 6, explain(runScore, connector));
+      await upload(code, deviceB, [crossing('b3', '52', 1602, unsynced)], { station: 'Backup' });
+      await until(() => runScore.lines.length >= 7, explain(runScore, connector));
+      assert.deepEqual(runScore.lines.slice(4), ['RSBI,50,00:26:40.00,Backup', 'RSBI,51,00:26:41.00,Backup', 'RSBI,52,00:26:42.00,Backup']);
+      assert.equal(connector.output().match(/NOTE {2}Backup is not synced to a time server/g)?.length, 1, connector.output());
       await connector.stop();
     });
 

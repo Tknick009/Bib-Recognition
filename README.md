@@ -272,6 +272,16 @@ it was last heard from; an iPad checks in every 45 seconds even when nothing is
 happening, so a station that has been silent for a few minutes has lost its
 connection or its app has been closed.
 
+**Each iPad on its own.** Every iPad has a **CSV** button of its own on the
+page, which downloads just that iPad's results, whatever else is ticked. The
+file is named after the event and the iPad (`spring-run-20261128-finish-a.csv`).
+The big **Download CSV** and **Copy CSV link** buttons cover the iPads that are
+ticked, so unticking all but one gives that iPad's detailed file or link too.
+All of this works while the race is still being recorded: a download is the
+results as they stand at that moment. Give the iPads different station names
+(*Finish A*, *Finish B*); if two have the same name, the page calls the second
+one *Finish (2)* so that they can still be told apart.
+
 To fetch the results from scoring software or a script instead, use the direct
 address (the page's **Copy CSV link** button builds it for you):
 
@@ -282,7 +292,7 @@ https://YOUR-ADDRESS/api/events/EVENT-CODE/results.csv?key=YOUR-KEY
 | Add to the address | Effect |
 | --- | --- |
 | `&format=detailed` | All columns instead of bib, time of day, elapsed and station. |
-| `&stations=Finish A,Finish B` | Only these stations. |
+| `&stations=Finish A` | Only this iPad, or several: `Finish A,Finish B`. |
 | `&dedupe=first` | One row per bib: the earliest. |
 | `&tz=America/New_York` | Times of day in this time zone (default: the iPads' own). |
 
@@ -293,6 +303,117 @@ of the address.
 `elapsed` is measured from the start time set on an iPad (tap **Start**, or set
 it in Race setup). If more than one iPad has a start time, the one set most
 recently is used, and the page shows which iPad it came from.
+
+### Sending results straight into RunScore
+
+[RunScore](https://runscore.com) can take results over a TCP connection, one
+line of text per result, in its open format:
+
+```
+RSBI,214,10:23:45.67,Finish A
+```
+
+That is the marker for a bib number, the bib, the time of day and the name of
+the timing point. RunScore listens for that connection on the scoring computer
+itself, and a website cannot reach into your computer. So the last step is
+done by a small program that runs on the scoring computer: it fetches each new
+result from the hub and hands it to RunScore.
+
+```
+iPads ── upload ─▶ hub ◀─ fetches ── connector ── TCP ─▶ RunScore
+                 (Railway)          └──── on the scoring computer ────┘
+```
+
+The connector runs in Windows PowerShell, which every Windows computer has.
+There is nothing to install.
+
+1. **In RunScore**, set up the timer input for its open format over TCP, give
+   it a port (3988 is a common choice) and start it. In the versions of
+   RunScore described online this is under *Tools → Initialize → External
+   Timer*, which has a TCP box and a port; I could not check that against
+   RunScore itself. What matters is that RunScore listens on a TCP port for
+   lines that begin with `RSBI`.
+2. **On the hub's page**, open **Send results to RunScore**, enter the port,
+   and press **Copy the line**. The line contains the key you opened the page
+   with; if you set a view key (`HUB_VIEW_KEY`), open the page with that one
+   first, since reading is all the connector needs.
+3. **On the scoring computer**, open **Windows PowerShell**, paste the line
+   and press Enter. Leave the window open during the race.
+
+The window shows what it is doing:
+
+```
+10:23:01  Connected to RunScore at 127.0.0.1:3988.
+10:23:54  -> RSBI,214,10:23:45.67,Finish A
+10:24:03  -> RSBI,87,10:23:54.02,Finish A
+```
+
+**Try it first.** *Copy a line that only tests the connection* gives a line
+that sends RunScore one made-up result (bib 9999 at the present time) and
+stops. If that result shows up in RunScore, the connection and the format are
+right. Then do a dry run with an iPad before relying on it: the connector is
+tested on Windows against a stand-in that records what it is sent, but it has
+not been tried against RunScore itself.
+
+How it behaves:
+
+- **A result is passed on about eight seconds after it is recorded.** The
+  camera sometimes corrects a number, or withdraws a misread, while the bib is
+  still in view; the wait keeps those out of RunScore. A mark without a number
+  is passed on when it gets its number.
+- **RunScore cannot be asked to take a result back.** If a result is corrected
+  or deleted on an iPad after it was passed on, the corrected one is passed on
+  as well and the window shows a line that starts with `NOTE`, saying what to
+  take out in RunScore.
+- **Nothing is lost when something is closed.** If RunScore is closed, or the
+  internet connection drops, the connector waits and then passes on everything
+  that was recorded meanwhile. If the connector itself is closed, start it
+  again with the same line: it carries on where it stopped. In the rare case
+  that RunScore closes at the very moment a result is on its way, that result
+  is passed on again afterwards, so RunScore may get it twice but never not at
+  all.
+- **Two iPads.** By default the results of every iPad go to RunScore, each
+  with its own station name as the timing point. Enter a **location name** to
+  give every line the same one. With two iPads on one finish line RunScore
+  then gets two times for most runners, as it would from a main and a backup
+  chip mat. To feed two separate inputs in RunScore, tick one iPad at a time
+  on the page and make a line for each port.
+- **An iPad that is not synced.** Its results are passed on all the same, and
+  the window warns, once, that its times come from the iPad's own clock.
+- **A click in the window.** In the classic Windows console a click selects
+  text, and Windows then holds the program up until Enter is pressed. The
+  connector switches that off for its window. Should the window ever seem
+  stuck all the same, click in it and press Enter; nothing is lost meanwhile.
+- **Data.** The connector asks the hub to hold each request until there is a
+  result, so it adds only about 0.2 MB an hour when nothing is happening
+  (worked out from the size of a request, not measured).
+
+Things that can be added to the end of the line:
+
+| Addition | Effect |
+| --- | --- |
+| `-RunScorePort 3988` | The port RunScore listens on. |
+| `-RunScoreHost 192.168.1.20` | RunScore on another computer on the same network (default: this one). |
+| `-Location FINISH` | The same timing-point name on every line. |
+| `-Decimals 3` | Thousandths of a second; 0 to 3 digits (default 2). |
+| `-Time elapsed` | Time since the start set on an iPad instead of time of day. |
+| `-Prefix RSCI` | Another marker at the start of each line (default `RSBI`). |
+| `-LineEnding LF` | How a line ends: `CRLF` (default), `LF` or `CR`. |
+| `-Settle 15` | Wait this many seconds before passing a result on (default 8). |
+| `-ResendAll` | Forget what was passed on and pass everything on again, for a fresh start in RunScore. |
+
+If the scoring computer does not allow a pasted line to fetch and run a
+program, save the program first: open `https://YOUR-ADDRESS/runscore.ps1` in a
+browser, save it, and start it from the folder it is in with the same
+settings as in the line:
+
+```
+powershell -ExecutionPolicy Bypass -File runscore.ps1 -Hub https://YOUR-ADDRESS -Key YOUR-KEY -EventCode EVENT-CODE -RunScorePort 3988
+```
+
+If the connection cannot be used on the day at all, **Download as a RunScore
+file** on the same panel gives the results as they stand as a text file of the
+same lines, and the CSV downloads work as always.
 
 ### What is sent, and keeping it private
 
@@ -468,6 +589,15 @@ bib,time_of_day,elapsed
 - **A new hub address or key is not being used.** It only comes into use when
   **Connect** in Settings has succeeded. The message under the button says what
   went wrong.
+- **The connector says "Waiting for RunScore to listen".** Nothing accepts a
+  connection on that port. Check that RunScore's TCP input is started and that
+  the port in the line is the one set in RunScore. Results recorded meanwhile
+  are passed on as soon as it connects.
+- **Results reach the connector's window but not RunScore.** RunScore accepted
+  the connection but did not take the lines. Compare a line in the window with
+  what RunScore expects: the marker (`-Prefix`), the line ending
+  (`-LineEnding`), time of day or elapsed (`-Time`) and the timing-point name
+  (`-Location`).
 - **The hub page shows two events for one race.** The iPads are using different
   event codes. Make them the same in Race setup; the iPad then sends its
   results under the new code. Clear away the stray one, and anything left from
@@ -489,6 +619,7 @@ BibTimer.swiftpm/        the app (a Swift Playgrounds app project)
 Package.swift            test/CI manifest: the same sources as a library
 Tests/                   unit tests for the app
 hub/                     the results hub (Node, no dependencies) and its tests
+  public/runscore.ps1    the connector that passes results on to RunScore
 Dockerfile               builds the hub, for Railway or any container host
 ```
 
@@ -498,8 +629,12 @@ covers the core logic, checks the NTP packet code against public time servers,
 and drives the app's upload client against a running hub. On macOS it also runs
 the real Vision recognizer against generated pictures and the real UDP client
 against a local time server. The hub has its own tests: `cd hub && node --test`.
-CI (`.github/workflows/ci.yml`) runs all of these, builds the hub's Docker
-image, compiles all app sources for iOS and builds the app project.
+They include the RunScore connector, run by whichever PowerShell is installed
+against a real hub and a TCP server that stands in for RunScore (skipped where
+there is no PowerShell). CI (`.github/workflows/ci.yml`) runs all of these,
+runs the connector on Windows with both Windows PowerShell and PowerShell 7,
+builds the hub's Docker image, compiles all app sources for iOS and builds the
+app project.
 
 How a time is produced:
 

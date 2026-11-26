@@ -209,15 +209,21 @@ export function createHandler({ store, key, viewKey = '', publicDir, log = () =>
         note: `Removed on the iPad (${entry.station}) after it was passed on: bib ${was.bib} at ${writer.time(was.time)}. Take it out in RunScore.`,
       };
     }
-    let note = '';
+    const notes = [];
     if (was && was.bib !== entry.bib) {
-      note = `Corrected on the iPad (${entry.station}): bib ${was.bib} at ${writer.time(was.time)} should be bib ${entry.bib}. ` +
-        `Bib ${entry.bib} is passed on now; take bib ${was.bib} at that time out in RunScore.`;
+      notes.push(`Corrected on the iPad (${entry.station}): bib ${was.bib} at ${writer.time(was.time)} should be bib ${entry.bib}. ` +
+        `Bib ${entry.bib} is passed on now; take bib ${was.bib} at that time out in RunScore.`);
     } else if (was) {
-      note = `Time corrected on the iPad (${entry.station}): bib ${entry.bib} was passed on at ${writer.time(was.time)} and is now ` +
-        `${writer.time(entry.time)}. Take the earlier time out in RunScore.`;
+      notes.push(`Time corrected on the iPad (${entry.station}): bib ${entry.bib} was passed on at ${writer.time(was.time)} and is now ` +
+        `${writer.time(entry.time)}. Take the earlier time out in RunScore.`);
     }
-    return { seq: entry.seq, line: writer.line(entry.bib, entry.time, entry.station), note };
+    // Worded the same for every result of that iPad, so that whoever reads
+    // the notes can show it once instead of once per result.
+    if (entry.unsynced) {
+      notes.push(`${entry.station} is not synced to a time server: its times come from the iPad's own clock and may be off. ` +
+        'Sync it (the badge at the top of the timing screen), then correct its times in Race setup.');
+    }
+    return { seq: entry.seq, line: writer.line(entry.bib, entry.time, entry.station), note: notes.join(' ') };
   }
 
   /** What to answer a reader of the feed right now; null if the event is gone. */

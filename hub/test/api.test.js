@@ -425,8 +425,19 @@ test('the feed refuses what it cannot do', async () => {
   assert.equal(refused.status, 409);
   assert.match((await refused.json()).error, /no start time/);
   assert.equal((await call('/api/events/no-start/runscore.txt?time=elapsed')).status, 409);
+  // A result timed with an iPad's own clock is passed on, with a warning that reads the same for each.
+  await call(`/api/events/no-start/sources/${deviceB}`, {
+    method: 'PUT',
+    body: upload([crossing('u1', '8', 20, { clock: 'device', clockError: null }), crossing('u2', '9', 21, { clock: 'device', clockError: null })], { station: 'Start', startTime: null }),
+  });
+  const unsynced = await (await call(`/api/events/no-start/runscore?settle=0&devices=${deviceB}`)).json();
+  assert.deepEqual(unsynced.entries.map((entry) => entry.line), ['RSBI,8,00:00:20.00,Start', 'RSBI,9,00:00:21.00,Start']);
+  assert.equal(unsynced.entries[0].note, "Start is not synced to a time server: its times come from the iPad's own clock and may be off. " +
+    'Sync it (the badge at the top of the timing screen), then correct its times in Race setup.');
+  assert.equal(unsynced.entries[1].note, unsynced.entries[0].note);
+
   // Nonsense settings fall back to the usual ones.
-  const odd = await (await call('/api/events/no-start/runscore?settle=0&decimals=9&prefix=R%20S&wait=x&limit=0&after=-4')).json();
+  const odd = await (await call(`/api/events/no-start/runscore?settle=0&decimals=9&prefix=R%20S&wait=x&limit=0&after=-4&devices=${device}`)).json();
   assert.deepEqual(odd.entries, [{ seq: 1, line: 'RSBI,3,00:00:10.000,Finish', note: '' }]);
 });
 

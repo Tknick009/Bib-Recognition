@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { elapsed, escapeCSV, isoUTC, isTimeZone, localDate, safeText, timeOfDay, toCSV } from '../lib/format.js';
+import {
+  elapsed, escapeCSV, fileSlug, isoUTC, isTimeZone, localDate, runScoreField, runScoreLine, safeText, timeOfDay, toCSV,
+} from '../lib/format.js';
 
 const newYear2021 = 1_609_459_200; // 2021-01-01T00:00:00Z
 
@@ -69,4 +71,44 @@ test('detailed CSV', () => {
   assert.equal(lines[2], '2,12,00:25:00.250,0:25:00.250,2021-01-01T00:25:00.250Z,manual,manual,,device,,"Finish, B","said ""go"""');
   assert.equal(lines[3], '');
   assert.equal(lines.length, 4);
+});
+
+test('times can be written with fewer decimals, cut and never rounded up', () => {
+  const moment = newYear2021 + 13 * 3600 + 20 * 60 + 2.129;
+  assert.equal(timeOfDay(moment, 'UTC', 3), '13:20:02.129');
+  assert.equal(timeOfDay(moment, 'UTC', 2), '13:20:02.12');
+  assert.equal(timeOfDay(moment, 'UTC', 1), '13:20:02.1');
+  assert.equal(timeOfDay(moment, 'UTC', 0), '13:20:02');
+  // A runner is never given a better second than the one that was run.
+  assert.equal(timeOfDay(newYear2021 + 59.999, 'UTC', 2), '00:00:59.99');
+  assert.equal(timeOfDay(newYear2021 + 59.999, 'UTC', 0), '00:00:59');
+  assert.equal(timeOfDay(newYear2021 + 0.004, 'UTC', 2), '00:00:00.00');
+  // Anything outside 0 to 3 is taken as the nearest of those.
+  assert.equal(timeOfDay(moment, 'UTC', 7), '13:20:02.129');
+  assert.equal(timeOfDay(moment, 'UTC', -1), '13:20:02');
+
+  assert.equal(elapsed(newYear2021, newYear2021 + 5025.678, 2), '1:23:45.67');
+  assert.equal(elapsed(newYear2021, newYear2021 + 5025.678, 0), '1:23:45');
+  assert.equal(elapsed(newYear2021 + 2, newYear2021 + 0.5, 1), '-0:00:01.5');
+});
+
+test('a result as a line for RunScore', () => {
+  assert.equal(runScoreLine({ bib: '0542', time: '13:20:02.12', location: 'FINISH' }), 'RSBI,0542,13:20:02.12,FINISH');
+  assert.equal(runScoreLine({ prefix: 'RSCI', bib: '7', time: '0:23:52.5', location: 'Finish A' }), 'RSCI,7,0:23:52.5,Finish A');
+  // Nothing in a name may start a new field or a new line.
+  assert.equal(runScoreLine({ bib: '7', time: '1:00:00', location: ' Start, finish\r\nRSBI,1,0:00:01,X ' }), 'RSBI,7,1:00:00,Start finish RSBI 1 0:00:01 X');
+  assert.equal(runScoreLine({ bib: '1,2', time: '1:00:00', location: '' }), 'RSBI,1 2,1:00:00,');
+  assert.equal(runScoreField('  Finish\t A  '), 'Finish A');
+  assert.equal(runScoreField('x'.repeat(60)).length, 40);
+  assert.equal(runScoreField(null), '');
+});
+
+test('names for files', () => {
+  assert.equal(fileSlug('Finish A'), 'finish-a');
+  assert.equal(fileSlug('Finish (2)'), 'finish-2');
+  assert.equal(fileSlug('  5 km / Split  '), '5-km-split');
+  assert.equal(fileSlug('***'), 'ipad');
+  assert.equal(fileSlug(''), 'ipad');
+  assert.ok(fileSlug('a very long station name that goes on and on and on').length <= 30);
+  assert.ok(!fileSlug('abcdefghijklmnopqrstuvwxyz012 - x').endsWith('-'));
 });
