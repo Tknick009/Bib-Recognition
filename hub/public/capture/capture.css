@@ -37,8 +37,11 @@
 [hidden] { display: none !important; }
 
 html, body { height: 100%; }
-/* A quick second tap is a second tap, not a wish to zoom in. */
-html { touch-action: manipulation; }
+/* A quick second tap is a second tap, and two fingers on the screen are an
+   accident: neither is a wish to zoom in. Scrolling stays. */
+html { touch-action: pan-x pan-y; }
+/* Nor is a finger that rests on a button a wish to select its words. */
+button, .chip, .badge, .view, .results-head { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 
 body {
   margin: 0;

@@ -75,7 +75,10 @@ reading, and sends what it has when the signal returns.
 ## What you need
 
 - **iPads with iPadOS 16.5 or later; 17 or later is better.** Safari is the
-  only thing used. Newer iPads read faster. An iPhone works too.
+  only thing used. Newer iPads read faster. An iPhone works too. The page
+  takes a good deal of memory while it reads (600 to 700 MB in a desktop
+  browser), which Safari may not grant on iPads from before about 2019: there
+  it may reload the page from time to time.
 - **The website**, set up once (next section).
 - **A connection for the iPads**: Wi-Fi, a phone hotspot or cellular. It is
   needed when the page is first opened (which fetches about 15 MB, once: do
