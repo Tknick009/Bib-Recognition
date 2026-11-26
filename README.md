@@ -478,10 +478,30 @@ not.
 
 **In the tests**, with drawn runners moving steadily down a drawn picture and
 never hiding one another, every bib was recorded and none wrongly. That shows
-that the chain works, not what a real finish gives. Expect a real finish to be
-well below that, and a packed one to be the hardest case. As a planning
-figure, assume the page misses more than the app would, and that someone has
-to catch the misses with **Mark**.
+that the chain works, not what a real finish gives.
+
+**Where it gives out** was tried the same way, with drawn runners coming
+thicker and faster, on the computer the page was developed on (where a look
+with one core takes about as long as it did in Safari's engine on the
+Apple-silicon Mac). Each line is thirty runners:
+
+| Runners arriving | Each bib readable for | Recorded, one core | Recorded, two cores |
+| --- | --- | --- | --- |
+| 1.7 a second | 3 s | 30 of 30 | |
+| 3.3 a second | 1.8 s | 29 of 30 | |
+| 3.3 a second | 1.2 s | 26 of 30 | 30 of 30 |
+| 3.3 a second | 0.8 s | 18 of 30 | 24 of 30 |
+| 6.7 a second | 1.8 s | 15 of 30 | 30 of 30 |
+| 6.7 a second | 1.2 s | 8 of 30 | 23 of 30 |
+
+No number was recorded wrongly in any of these. The pattern is the useful
+part: the page copes with a steady stream, and starts to lose runners when
+many are in the picture at once and each is readable for little more than a
+second. Every bib in view makes each look take longer, so a crowd slows it
+down just when it is needed most. Real runners also hide one another, which
+drawn ones did not, so expect a real finish to be below these figures, and a
+packed one well below. As a planning figure, assume the page misses more than
+the app would, and that someone has to catch the misses with **Mark**.
 
 **What raises it**, most effective first:
 
@@ -494,9 +514,11 @@ to catch the misses with **Mark**.
 4. **A start list**, with *Only record numbers that are on this list*. It does
    not find more bibs, but it turns misreads into nothing instead of into
    wrong results.
-5. **Settings → How closely each picture is searched → Quick**, if the bibs
-   are large in the picture. *Thorough* finds smaller bibs and looks less
-   often.
+5. **Settings → How closely each picture is searched.** Left on *Automatic*
+   the page searches quickly when it reads with one core, which looks more
+   often and needs bibs to be a fortieth of the picture's height. *Standard*
+   and *Thorough* find smaller bibs and look less often: use them only where
+   runners are few and far from the camera.
 6. **Settings → For fine-tuning → Processor cores**: try 2 (or 4 on an iPad
    with an M-series chip) and keep it if the looks a second go up. Left to
    itself the page uses one core on an iPad, because reading with several
@@ -637,7 +659,7 @@ RunScore file** on the results page).
 | Smallest numbers to read | Larger skips distant runners and small print, and is a little quicker. |
 | Read a look-alike letter as its digit | Reads `1O4` as `104`. |
 | Lens, Zoom | Which of the iPad's cameras, and how far it is zoomed in, where Safari offers the choice. |
-| How closely each picture is searched | *Quick*, *Standard* or *Thorough*: more looks a second, or smaller bibs found. |
+| How closely each picture is searched | *Quick*, *Standard* or *Thorough*: more looks a second, or smaller bibs found. *Automatic* (the default) is Quick when reading with one core and Standard with several. |
 | Keep a small photo with each result | For checking afterwards. Photos stay on the iPad. |
 | Processor cores used for reading | See [How many runners will it catch?](#how-many-runners-will-it-catch) |
 | Camera delay | See [How accurate are the times?](#how-accurate-are-the-times) |
@@ -670,8 +692,8 @@ RunScore file** on the results page).
 - **Times are all marked estimated.** Bibs are not being read on both sides of
   the line. Move the line further up the picture, to where bibs are still
   comfortably readable, and make sure the arrow points the way runners go.
-- **Few looks a second.** Make the search area smaller, choose *Quick*, keep
-  the iPad cool and on power, switch Low Power Mode off, and try 2 cores.
+- **Few looks a second.** Make the search area smaller, keep the iPad cool
+  and on power, switch Low Power Mode off, and try 2 cores.
 - **The page says it was not in front, or was loaded again.** Something else
   was on screen, or Safari reloaded the page. Nothing was read in the time
   shown; take those runners from your backup. Guided Access keeps the page in

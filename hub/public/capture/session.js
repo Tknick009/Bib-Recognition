@@ -13,15 +13,26 @@ import { BibTracker, defaultTrackerConfig } from './lib/tracker.js';
 export const detailLevels = { fast: 736, standard: 960, far: 1280 };
 
 /**
+ * The level in use. Left to itself ('auto') the page searches quickly when
+ * it reads with one processor core: with one core a look takes long enough
+ * that looking more often catches more runners than looking more closely.
+ */
+export function detailFor(settings, cores = 1) {
+  if (settings.detail in detailLevels) return settings.detail;
+  return cores > 1 ? 'standard' : 'fast';
+}
+
+/**
  * Which part of the camera's picture to hand to the reader, and what to ask
  * of it.
  *
  * @param {object} settings the page's settings
  * @param {number} width the picture's width in pixels
  * @param {number} height
+ * @param {number} cores how many processor cores the reader uses
  * @returns {{zone: {x: number, y: number, width: number, height: number}, options: object}} the zone in whole pixels
  */
-export function scanPlan(settings, width, height) {
+export function scanPlan(settings, width, height, cores = 1) {
   const part = clampBox(settings.scanZone);
   const x = Math.min(width - 1, Math.max(0, Math.floor(part.x * width)));
   const y = Math.min(height - 1, Math.max(0, Math.floor(part.y * height)));
@@ -32,7 +43,7 @@ export function scanPlan(settings, width, height) {
   };
   // The zone is shrunk by as much as the whole picture would be, so a
   // smaller zone is quicker to search and bibs in it are found just as well.
-  const shrink = Math.min(1, (detailLevels[settings.detail] ?? detailLevels.standard) / Math.max(width, height));
+  const shrink = Math.min(1, detailLevels[detailFor(settings, cores)] / Math.max(width, height));
   const rules = settings.rules;
   return {
     zone,

@@ -74,8 +74,9 @@ jobs:
     # The page the iPads capture a race with, driven in real browsers with a
     # stand-in for the camera: signing in, reading bibs, timing them at the
     # line, sending them to a hub, working without a connection. WebKit is the
-    # engine of Safari, the only kind of browser an iPad has; it is also run
-    # made up as an iPad, which gets the plain form of the bib reader.
+    # engine of Safari, the only kind of browser an iPad has; it is run made
+    # up as an iPad, which gets the plain form of the bib reader by default
+    # (the test also switches it to the quick form and back).
     name: Capture page (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -86,10 +87,6 @@ jobs:
           - name: Chromium
             os: ubuntu-latest
             browser: chromium
-            device: none
-          - name: WebKit
-            os: macos-latest
-            browser: webkit
             device: none
           - name: WebKit as an iPad
             os: macos-latest

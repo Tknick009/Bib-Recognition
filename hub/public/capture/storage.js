@@ -23,8 +23,9 @@ export function defaultSettings() {
     rules: defaultRules(),
     minSightings: 2,
     repeatRule: defaultRepeatRule(),
-    // How large the picture is when text is looked for: 'fast', 'standard' or 'far'.
-    detail: 'standard',
+    // How large the picture is when text is looked for: 'fast', 'standard' or
+    // 'far', or 'auto' to go by how many processor cores the reader has.
+    detail: 'auto',
     // How long before a picture reaches the page the camera took it, in
     // milliseconds, where the browser does not say.
     cameraDelay: 60,

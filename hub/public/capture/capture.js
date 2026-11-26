@@ -650,7 +650,7 @@ function look(time) {
     setTimeout(nextLook, 250);
     return;
   }
-  const plan = scanPlan(storage.settings, width, height);
+  const plan = scanPlan(storage.settings, width, height, reader.threads);
   const { zone } = plan;
   let image;
   try {

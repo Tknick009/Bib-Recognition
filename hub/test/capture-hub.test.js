@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { Failure, HubLink, TimeKeeper, Uploader } from '../public/capture/hub.js';
 import { RaceClock } from '../public/capture/lib/timesync.js';
-import { detailLevels, photoRegion, scanPlan, Session, toPictureFractions } from '../public/capture/session.js';
+import { detailFor, detailLevels, photoRegion, scanPlan, Session, toPictureFractions } from '../public/capture/session.js';
 import { defaultSettings } from '../public/capture/storage.js';
 import { startHub } from '../server.js';
 
@@ -469,6 +469,13 @@ test('moving the line starts the following afresh, so that no bib is timed by ha
 
 test('the part of the picture that is searched, and how closely', () => {
   const settings = defaultSettings();
+  // Left to itself the page searches quickly with one core and more closely with several:
+  // with one core, looking more often catches more runners than looking more closely.
+  assert.deepEqual([settings.detail, detailFor(settings, 1), detailFor(settings, 2), detailFor(settings, 4)], ['auto', 'fast', 'standard', 'standard']);
+  assert.equal(scanPlan(settings, 1920, 1080, 1).options.maxSide, detailLevels.fast);
+  assert.equal(scanPlan(settings, 1920, 1080, 2).options.maxSide, detailLevels.standard);
+  assert.equal(detailFor({ detail: 'far' }, 1), 'far');
+  settings.detail = 'standard';
   let plan = scanPlan(settings, 1920, 1080);
   assert.deepEqual(plan.zone, { x: 0, y: 0, width: 1920, height: 1080 });
   assert.equal(plan.options.maxSide, detailLevels.standard);
