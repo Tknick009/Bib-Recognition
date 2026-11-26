@@ -400,7 +400,7 @@ Things that can be added to the end of the line:
 | `-Location FINISH` | The same timing-point name on every line. |
 | `-Decimals 3` | Thousandths of a second; 0 to 3 digits (default 2). |
 | `-Time elapsed` | Time since the start set on an iPad instead of time of day. |
-| `-Prefix RSCI` | Another marker at the start of each line (default `RSBI`). |
+| `-Prefix RSBCI` | Another marker at the start of each line. The default, `RSBI`, says the number is a bib number. RunScore's format also has `RSCI` (a chip code) and `RSBCI`, which at least one other timing system sends to RunScore; try that one if `RSBI` lines are not taken. |
 | `-LineEnding LF` | How a line ends: `CRLF` (default), `LF` or `CR`. |
 | `-Settle 15` | Wait this many seconds before passing a result on (default 8). |
 | `-ResendAll` | Forget what was passed on and pass everything on again, for a fresh start in RunScore. |
