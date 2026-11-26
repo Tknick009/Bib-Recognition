@@ -149,6 +149,9 @@ fetched again, and the page then opens even without a connection.
 - **Where this iPad stands.** Its own name for each iPad: *Finish A*,
   *Finish B*, *Start*. This is how their results are told apart later.
 
+A race from an earlier day can be cleared off the iPad here: choose it and tap
+**Remove this race from this iPad**. What the results site holds stays there.
+
 Tap **Open the camera** and allow the camera when Safari asks. Safari asks
 again every time the page is loaded unless you tell it not to: tap the icon at
 the left of the address bar, **Website Settings**, and set **Camera** to
@@ -459,10 +462,12 @@ been run on a real one. What can be said:
 
 **It reads less often than the app does.** The camera page looks at the
 picture a few times a second; the number is shown at the top of the picture
-(*Reading · 3.2 looks a second*). On the computer it was developed on, a look
-at a full picture with a few bibs in it takes 0.4 to 0.6 seconds. Recent iPads
-should be faster than that and old ones slower; that is a guess from their
-processors, not a measurement.
+(*Reading · 2.4 looks a second*). The nearest thing to an iPad it has been
+timed on is Safari's engine on an Apple-silicon Mac in a test centre: there a
+look at a whole picture with one bib in it took about 0.43 seconds on one
+processor core and 0.25 seconds on two, and a little longer with every
+further bib in view. An iPad with an M-series chip should be close to that;
+older iPads will be slower, by how much is not known.
 
 **What a bib needs** in order to be recorded: to be readable in two looks (so
 that one stray reading is not believed), and for an exact time, in one look
@@ -712,9 +717,11 @@ So that you know what you are relying on:
 - **Tested automatically in real browsers** (Chromium, and WebKit, the engine
   of Safari, on a Mac, also made up to look like an iPad): the camera page
   from signing in to results on the site, with drawn runners in place of a
-  camera; correcting results; the settings; reloading while recording; working
-  and reloading without a connection; two iPads at one race; falling back when
-  the quicker reading program is refused.
+  camera; correcting results; the settings; dragging the finish line;
+  reloading while recording; working, and being loaded again, with the site
+  gone; two iPads at one race; falling back when the quicker reading program
+  is refused. In these tests every drawn bib was recorded, with times within
+  0.06 seconds of where the drawing put them.
 - **Not tested:** anything on a real iPad. In particular how fast and how well
   it reads real bibs, how Safari on an iPad treats the camera and a page that
   is open for hours, and how warm the iPad gets. And nothing has been tried
@@ -778,10 +785,12 @@ How a time is produced on the camera page:
 
 The reading program comes in two forms (`reader.js`). The quick one is ONNX
 Runtime Web 1.31 with several threads, which needs shared memory; its request
-for memory is lowered from 4 GB to 1 GB at install time. The plain one is ONNX
-Runtime Web 1.18, the last version built without shared memory, on one thread.
-iPads get the plain one unless told otherwise, and any browser falls back to
-it if the quick one fails to start.
+for memory is lowered from 4 GB to 1 GB at install time, and its helper
+threads are started from a copy the page holds, because a browser fetches a
+worker's program past the service worker. The plain one is ONNX Runtime Web
+1.18, the last version built without shared memory, on one thread. iPads get
+the plain one unless told otherwise, and any browser falls back to it if the
+quick one fails to start.
 
 Tests:
 
