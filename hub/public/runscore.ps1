@@ -73,7 +73,7 @@ try {
 } catch { }
 
 function Say([string] $text, [string] $color = '') {
-    $stamp = (Get-Date).ToString('HH:mm:ss')
+    $stamp = (Get-Date).ToString('HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
     if ($color -ne '') {
         Write-Host ('{0}  {1}' -f $stamp, $text) -ForegroundColor $color
     } else {
@@ -184,7 +184,9 @@ if ($Test) {
         Say ('Nothing is listening at {0}. In RunScore, set up the timer input for TCP on this port and start it, then try again.' -f $runScoreAt) 'Red'
         return
     }
-    $stamp = (Get-Date).ToString('HH:mm:ss.fff').Substring(0, 8 + $(if ($Decimals -gt 0) { $Decimals + 1 } else { 0 }))
+    # Written the same way whatever language and region Windows is set to.
+    $stamp = (Get-Date).ToString('HH:mm:ss.fff', [System.Globalization.CultureInfo]::InvariantCulture)
+    $stamp = $stamp.Substring(0, 8 + $(if ($Decimals -gt 0) { $Decimals + 1 } else { 0 }))
     $where = $(if ($Location -ne '') { $Location } else { 'TEST' })
     $line = '{0},{1},{2},{3}' -f $Prefix.ToUpper(), $TestBib, $stamp, $where
     try {
